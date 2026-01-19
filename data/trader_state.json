@@ -1,0 +1,49 @@
+{
+  "in_position": false,
+  "entry_price": null,
+  "entry_time": null,
+  "position_size": 0.0,
+  "entry_atr": null,
+  "high_water_mark": null,
+  "partial_taken": false,
+  "drop_detected": true,
+  "rise_window_data": [
+    {
+      "close": 141.25,
+      "volume": 302.518,
+      "bar_change_pct": -0.5841779279279367
+    },
+    {
+      "close": 135.61,
+      "volume": 231.364,
+      "bar_change_pct": -1.5249437223150055
+    },
+    {
+      "close": 133.78,
+      "volume": 0.0,
+      "bar_change_pct": 0.0
+    },
+    {
+      "close": 133.37,
+      "volume": 0.0,
+      "bar_change_pct": 0.0
+    },
+    {
+      "close": 134.02,
+      "volume": 0.0,
+      "bar_change_pct": 0.0
+    },
+    {
+      "close": 133.46,
+      "volume": 0.0,
+      "bar_change_pct": 0.0
+    }
+  ],
+  "last_4h_bar_time": "2026-01-19 16:00:00",
+  "paper_balance": 10000.0,
+  "paper_position_size": 0.0,
+  "total_trades": 0,
+  "winning_trades": 0,
+  "losing_trades": 0,
+  "total_pnl": 0.0
+}

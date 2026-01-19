@@ -1,0 +1,31 @@
+{
+  "params": {
+    "drop_window": 90,
+    "min_drop_pct": 12.5,
+    "rise_window": 85,
+    "min_up_bars_ratio": 0.3,
+    "max_single_up_bar": 12.0,
+    "max_single_down_bar": -5.0,
+    "min_rise_pct": 2.5,
+    "volume_confirm": false,
+    "daily_ema_period": 4,
+    "atr_period": 22,
+    "atr_trailing_mult": 5.0,
+    "atr_fixed_mult": 2.9,
+    "trailing_pct": 9.5,
+    "fixed_stop_pct": 6.0,
+    "partial_target_mult": 5.75,
+    "partial_sell_ratio": 0.5,
+    "use_partial_profits": false
+  },
+  "metrics": {
+    "final_value": 196163.5384839474,
+    "total_return_pct": 1861.6353848394742,
+    "total_trades": 65,
+    "win_rate_pct": 43.07692307692308,
+    "max_drawdown_pct": 46.789381518951,
+    "sharpe_ratio": 0
+  },
+  "trial_number": 46,
+  "timestamp": "2026-01-18T15:37:10.462257"
+}

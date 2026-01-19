@@ -1,0 +1,12 @@
+{
+  "in_position": true,
+  "entry_price": 134.2,
+  "entry_time": "2026-01-19T11:42:49.913488",
+  "position_size": 144.4965406223312,
+  "paper_balance": 395.7435867656495,
+  "paper_position_size": 144.4965406223312,
+  "total_trades": 6,
+  "winning_trades": 1,
+  "losing_trades": 5,
+  "total_pnl": -13.126958773778824
+}
