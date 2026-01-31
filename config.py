@@ -165,6 +165,76 @@ V7_PARAMS = {
     "use_4h_death_cross_exit": True,
 }
 
+# V9 - Range Trading with Previous Day High/Low (baseline)
+V9_PARAMS = {
+    "trend_lookback": 3,         # Days to check for trend pattern
+    "approach_pct": 0.5,         # % within prev day high/low to trigger entry
+    "target_buffer_pct": 1.0,    # % buffer from exact high/low (99% of range)
+    "rr_ratio": 3.0,             # Risk:Reward ratio
+    "min_range_pct": 1.0,        # Minimum prev day range as % of price
+    "cooldown_bars": 4,          # Minimum hourly bars between trades
+    "position_pct": 0.98,        # % of cash to use per trade
+}
+
+# V9 SOL-optimized params (Trial #46 - 168.5% return, 64.9% win rate)
+V9_SOL_PARAMS = {
+    "approach_pct": 0.75,
+    "cooldown_bars": 1,
+    "min_range_pct": 4.0,
+    "position_pct": 0.9,
+    "rr_ratio": 2.0,
+    "target_buffer_pct": 4.5,
+    "trend_lookback": 3,
+}
+
+# V9 VET-optimized params (Trial #71 - 154.9% return, 46.3% win rate)
+V9_VET_PARAMS = {
+    "approach_pct": 3.0,
+    "cooldown_bars": 10,
+    "min_range_pct": 3.5,
+    "position_pct": 0.94,
+    "rr_ratio": 3.0,
+    "target_buffer_pct": 4.0,
+    "trend_lookback": 2,
+}
+
+# V9 Universal params (middle ground for cross-asset use)
+V9_UNIVERSAL_PARAMS = {
+    "trend_lookback": 3,
+    "approach_pct": 1.5,
+    "target_buffer_pct": 4.0,
+    "min_range_pct": 3.5,
+    "rr_ratio": 2.5,
+    "cooldown_bars": 6,
+    "position_pct": 0.92,
+}
+
+# Default V9 to universal params
+V9_OPTIMIZED_PARAMS = V9_UNIVERSAL_PARAMS
+
+# V10 - Trend Trading with Pullbacks (baseline)
+V10_PARAMS = {
+    "trend_lookback": 3,         # Days to confirm trend
+    "approach_pct": 0.5,         # % within prev day high/low to trigger entry
+    "target_buffer_pct": 1.0,    # % buffer from exact high/low
+    "rr_ratio": 3.0,             # Risk:Reward ratio
+    "min_range_pct": 1.0,        # Minimum prev day range as % of price
+    "cooldown_bars": 4,          # Minimum hourly bars between trades
+    "position_pct": 0.98,        # % of cash to use per trade
+}
+
+# V10 SOL-optimized params (Trial #79 - 150% return, 63.8% win rate, 14.7% max DD)
+V10_SOL_PARAMS = {
+    "approach_pct": 0.5,
+    "cooldown_bars": 11,
+    "min_range_pct": 1.5,
+    "position_pct": 0.94,
+    "rr_ratio": 2.5,
+    "target_buffer_pct": 5.0,
+    "trend_lookback": 2,
+}
+
+
 # V6 - Multi-TF with bracket orders
 V6_PARAMS = {
     "ema_short": 9,
@@ -206,6 +276,14 @@ V3_PARAMS = {
 
 # Map strategy names to their parameter sets
 STRATEGY_PARAMS: Dict[str, Dict[str, Any]] = {
+    "v10": V10_SOL_PARAMS,  # Default to optimized
+    "v10_baseline": V10_PARAMS,
+    "v10_sol": V10_SOL_PARAMS,
+    "v9": V9_UNIVERSAL_PARAMS,  # Default to universal
+    "v9_baseline": V9_PARAMS,
+    "v9_universal": V9_UNIVERSAL_PARAMS,
+    "v9_sol": V9_SOL_PARAMS,
+    "v9_vet": V9_VET_PARAMS,
     "v8": V8_PARAMS,
     "v8_fast": V8_FAST_OPTIMIZED_PARAMS,
     "v8_fast_sol": V8_FAST_SOL_PARAMS,
@@ -230,8 +308,18 @@ def register_strategies():
     from strategies.sol_strategy_v7 import SolStrategyV7
     from strategies.sol_strategy_v8 import SolStrategyV8
     from strategies.sol_strategy_v8_fast import SolStrategyV8Fast
+    from strategies.sol_strategy_v9 import SolStrategyV9
+    from strategies.sol_strategy_v10 import SolStrategyV10
 
     STRATEGY_CLASSES.update({
+        "v10": SolStrategyV10,
+        "v10_baseline": SolStrategyV10,
+        "v10_sol": SolStrategyV10,
+        "v9": SolStrategyV9,
+        "v9_baseline": SolStrategyV9,
+        "v9_universal": SolStrategyV9,
+        "v9_sol": SolStrategyV9,
+        "v9_vet": SolStrategyV9,
         "v3": SolStrategyV3,
         "v6": SolStrategyV6,
         "v7": SolStrategyV7,

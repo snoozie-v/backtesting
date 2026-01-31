@@ -140,17 +140,21 @@ def run_backtest(
     save: bool = True,
     verbose: bool = True,
     notes: str = "",
+    start_date: str = None,
+    end_date: str = None,
 ):
     """
     Run a backtest with the specified strategy.
 
     Args:
-        strategy_name: Strategy to use (v3, v6, v7, v8, v8_baseline)
+        strategy_name: Strategy to use (v3, v6, v7, v8, v8_baseline, v9)
         data_source: Data source (binance, yfinance, daily)
         params_override: Override default params with custom values
         save: Whether to save results to JSON
         verbose: Whether to print progress
         notes: Optional notes to save with result
+        start_date: Start date filter (YYYY-MM-DD)
+        end_date: End date filter (YYYY-MM-DD)
 
     Returns:
         BacktestResult object
@@ -172,6 +176,16 @@ def run_backtest(
     if verbose:
         print(f"Loading data from {data_source}...")
     df = load_data(source=source, timeframe=timeframe)
+
+    # Filter by date range if specified
+    if start_date:
+        df = df[df.index >= start_date]
+        if verbose:
+            print(f"Filtering from {start_date}")
+    if end_date:
+        df = df[df.index <= end_date]
+        if verbose:
+            print(f"Filtering to {end_date}")
 
     # Get date range
     start_date = str(df.index.min().date()) if len(df) > 0 else None
@@ -366,7 +380,7 @@ Examples:
     parser.add_argument(
         "--strategy", "-s",
         default="v8",
-        choices=["v3", "v6", "v7", "v8", "v8_fast", "v8_fast_sol", "v8_fast_vet", "v8_baseline"],
+        choices=["v3", "v6", "v7", "v8", "v8_fast", "v8_fast_sol", "v8_fast_vet", "v8_baseline", "v9", "v9_baseline", "v9_universal", "v9_sol", "v9_vet", "v10", "v10_baseline", "v10_sol"],
         help="Strategy to run (default: v8)"
     )
 
@@ -451,6 +465,18 @@ Examples:
         help="Add notes to the result"
     )
 
+    # Date range filtering
+    parser.add_argument(
+        "--start-date",
+        type=str,
+        help="Start date for backtest (YYYY-MM-DD)"
+    )
+    parser.add_argument(
+        "--end-date",
+        type=str,
+        help="End date for backtest (YYYY-MM-DD)"
+    )
+
     # Parameter overrides (common ones)
     parser.add_argument("--trailing-pct", type=float, help="Override trailing stop %")
     parser.add_argument("--fixed-stop-pct", type=float, help="Override fixed stop %")
@@ -527,6 +553,8 @@ Examples:
         save=not args.no_save,
         verbose=not args.quiet,
         notes=args.notes,
+        start_date=args.start_date,
+        end_date=args.end_date,
     )
 
     if not args.quiet:

@@ -1,0 +1,21 @@
+{
+  "params": {
+    "trend_lookback": 2,
+    "approach_pct": 3.0,
+    "target_buffer_pct": 4.0,
+    "rr_ratio": 3.0,
+    "min_range_pct": 3.5,
+    "cooldown_bars": 10,
+    "position_pct": 0.94
+  },
+  "metrics": {
+    "final_value": 25487.86385668815,
+    "total_return_pct": 154.87863856688148,
+    "total_trades": 82,
+    "win_rate_pct": 46.34146341463415,
+    "max_drawdown_pct": 43.17775907268504,
+    "sharpe_ratio": 0
+  },
+  "trial_number": 71,
+  "timestamp": "2026-01-31T01:32:51.596099"
+}
