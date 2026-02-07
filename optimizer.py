@@ -24,12 +24,14 @@ from config import V8_FAST_OPTIMIZED_PARAMS, V8_PARAMS
 RESULTS_DIR = Path("results")
 
 
-def create_v8_fast_objective(metric: str = "final_value"):
+def create_v8_fast_objective(metric: str = "final_value", start_date: str = None, end_date: str = None):
     """
     Create objective function for v8_fast optimization.
 
     Args:
         metric: What to optimize - "final_value", "sharpe", or "return"
+        start_date: Optional start date filter (YYYY-MM-DD)
+        end_date: Optional end date filter (YYYY-MM-DD)
     """
     def objective(trial: optuna.Trial) -> float:
         # Narrowed ranges based on Trial #13 best values:
@@ -75,6 +77,8 @@ def create_v8_fast_objective(metric: str = "final_value"):
                 params_override=params,
                 save=False,
                 verbose=False,
+                start_date=start_date,
+                end_date=end_date,
             )
 
             # Store additional metrics as user attributes
@@ -100,7 +104,7 @@ def create_v8_fast_objective(metric: str = "final_value"):
     return objective
 
 
-def create_v8_objective(metric: str = "final_value"):
+def create_v8_objective(metric: str = "final_value", start_date: str = None, end_date: str = None):
     """
     Create objective function for v8 (daily) optimization.
     """
@@ -134,6 +138,8 @@ def create_v8_objective(metric: str = "final_value"):
                 params_override=params,
                 save=False,
                 verbose=False,
+                start_date=start_date,
+                end_date=end_date,
             )
 
             trial.set_user_attr("total_return_pct", result.total_return_pct)
@@ -158,7 +164,7 @@ def create_v8_objective(metric: str = "final_value"):
     return objective
 
 
-def create_v10_objective(metric: str = "final_value"):
+def create_v10_objective(metric: str = "final_value", start_date: str = None, end_date: str = None):
     """
     Create objective function for v10 (trend trading with pullbacks) optimization.
     """
@@ -192,6 +198,8 @@ def create_v10_objective(metric: str = "final_value"):
                 params_override=params,
                 save=False,
                 verbose=False,
+                start_date=start_date,
+                end_date=end_date,
             )
 
             trial.set_user_attr("total_return_pct", result.total_return_pct)
@@ -216,7 +224,7 @@ def create_v10_objective(metric: str = "final_value"):
     return objective
 
 
-def create_v9_objective(metric: str = "final_value"):
+def create_v9_objective(metric: str = "final_value", start_date: str = None, end_date: str = None):
     """
     Create objective function for v9 (range trading) optimization.
     """
@@ -250,6 +258,8 @@ def create_v9_objective(metric: str = "final_value"):
                 params_override=params,
                 save=False,
                 verbose=False,
+                start_date=start_date,
+                end_date=end_date,
             )
 
             trial.set_user_attr("total_return_pct", result.total_return_pct)
@@ -803,13 +813,13 @@ def optimize(
 
     # Select objective function
     if strategy == "v8_fast":
-        objective = create_v8_fast_objective(metric)
+        objective = create_v8_fast_objective(metric, start_date=start_date, end_date=end_date)
     elif strategy == "v8":
-        objective = create_v8_objective(metric)
+        objective = create_v8_objective(metric, start_date=start_date, end_date=end_date)
     elif strategy == "v9":
-        objective = create_v9_objective(metric)
+        objective = create_v9_objective(metric, start_date=start_date, end_date=end_date)
     elif strategy == "v10":
-        objective = create_v10_objective(metric)
+        objective = create_v10_objective(metric, start_date=start_date, end_date=end_date)
     elif strategy == "v11":
         objective = create_v11_objective(metric)
     elif strategy == "v12":
@@ -936,6 +946,86 @@ def print_results(study: optuna.Study, strategy: str):
     print("}")
 
 
+def analyze_importance(strategy: str):
+    """
+    Analyze parameter importance from existing Optuna studies.
+
+    Uses fANOVA-based importance evaluation to rank which parameters
+    have the most impact on the optimization objective.
+    """
+    storage = f"sqlite:///{RESULTS_DIR}/optuna_{strategy}.db"
+
+    # Load all studies from the database
+    try:
+        study_summaries = optuna.study.get_all_study_summaries(storage=storage)
+    except Exception as e:
+        print(f"Error loading studies from {RESULTS_DIR}/optuna_{strategy}.db: {e}")
+        print("Run optimization first to generate study data.")
+        return
+
+    if not study_summaries:
+        print(f"No studies found in {RESULTS_DIR}/optuna_{strategy}.db")
+        return
+
+    # Use the study with the most trials
+    best_summary = max(study_summaries, key=lambda s: s.n_trials)
+    study = optuna.load_study(study_name=best_summary.study_name, storage=storage)
+
+    completed_trials = [t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE]
+    if len(completed_trials) < 3:
+        print(f"Need at least 3 completed trials, found {len(completed_trials)}")
+        return
+
+    print(f"\nParameter Importance Analysis for {strategy}")
+    print(f"Study: {best_summary.study_name}")
+    print(f"Completed trials: {len(completed_trials)}")
+    print(f"Best value: ${study.best_value:,.2f}")
+    print("=" * 70)
+
+    # Get parameter importances
+    try:
+        importances = optuna.importance.get_param_importances(study)
+    except Exception as e:
+        print(f"Error computing importances: {e}")
+        print("This may happen if there are too few trials or insufficient parameter variation.")
+        return
+
+    # Get best params for reference
+    best_params = study.best_trial.params
+
+    # Print ranked table
+    print(f"\n{'Rank':<6} {'Parameter':<25} {'Importance':>12} {'Best Value':>15}")
+    print("-" * 62)
+
+    for i, (param, importance) in enumerate(importances.items(), 1):
+        best_val = best_params.get(param, "N/A")
+        if isinstance(best_val, float):
+            best_val_str = f"{best_val:.2f}"
+        else:
+            best_val_str = str(best_val)
+
+        bar = "#" * int(importance * 40)
+        print(f"  {i:<4} {param:<25} {importance:>11.1%} {best_val_str:>15}")
+        print(f"       {bar}")
+
+    print("-" * 62)
+
+    # Summary
+    top_params = list(importances.items())
+    if len(top_params) >= 3:
+        top3_importance = sum(v for _, v in top_params[:3])
+        print(f"\nTop 3 params account for {top3_importance:.0%} of variance")
+        print("Focus optimization and strategy design on these parameters.")
+
+    # Show low-importance params that could be fixed
+    low_importance = [(k, v) for k, v in importances.items() if v < 0.05]
+    if low_importance:
+        print(f"\nLow-importance params (<5%) that could be fixed to reduce search space:")
+        for param, imp in low_importance:
+            best_val = best_params.get(param, "N/A")
+            print(f"  {param}: fix at {best_val} (importance: {imp:.1%})")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Optimize strategy parameters using Optuna",
@@ -947,6 +1037,7 @@ Examples:
   python optimizer.py --strategy v8            # Optimize v8 instead
   python optimizer.py --metric sharpe          # Optimize for Sharpe ratio
   python optimizer.py --resume --study my_study  # Resume previous study
+  python optimizer.py -s v8_fast --importance  # Analyze parameter importance
         """,
     )
 
@@ -1001,6 +1092,12 @@ Examples:
         help="End date for backtest data (YYYY-MM-DD)"
     )
 
+    parser.add_argument(
+        "--importance", "-i",
+        action="store_true",
+        help="Analyze parameter importance from existing study"
+    )
+
     args = parser.parse_args()
 
     # Set active asset if specified
@@ -1008,6 +1105,11 @@ Examples:
         import config
         config.ACTIVE_ASSET = args.asset.upper()
         print(f"Using asset: {config.ACTIVE_ASSET}/USD")
+
+    # Handle importance analysis
+    if args.importance:
+        analyze_importance(args.strategy)
+        return
 
     study = optimize(
         strategy=args.strategy,

@@ -12,6 +12,8 @@ Usage examples:
     python backtest.py --strategy v3 --data daily  # Run V3 with daily data
     python backtest.py --list-results           # Show recent results
     python backtest.py --compare v8             # Compare all V8 runs
+    python backtest.py -s v8_fast --walk-forward  # Walk-forward validation
+    python backtest.py --compare-all            # Compare all strategies head-to-head
 """
 
 import argparse
@@ -28,6 +30,9 @@ from results import (
     save_result,
     print_result,
     print_comparison_table,
+    print_ranked_table,
+    print_walk_forward_report,
+    save_comparison,
     load_all_results,
     TradeTracker,
 )
@@ -361,6 +366,168 @@ def run_tune(strategy_name: str = "v8", verbose: bool = True):
     return results
 
 
+def run_walk_forward(
+    strategy_name: str = "v8",
+    data_source: str = "binance",
+    train_pct: int = 70,
+    n_trials: int = 50,
+    metric: str = "final_value",
+    verbose: bool = True,
+):
+    """
+    Run walk-forward validation: optimize on train period, test on unseen data.
+
+    Args:
+        strategy_name: Strategy to validate
+        data_source: Data source
+        train_pct: Percentage of data for training (default: 70%)
+        n_trials: Number of optimization trials for training phase
+        metric: Optimization metric
+        verbose: Whether to print progress
+
+    Returns:
+        Tuple of (in_sample_result, out_of_sample_result)
+    """
+    from optimizer import optimize
+
+    # Load full data to determine split point
+    is_single_tf = strategy_name == "v3"
+    timeframe = "daily" if is_single_tf or data_source == "daily" else "15m"
+    source = data_source if data_source != "daily" else "binance"
+    df = load_data(source=source, timeframe=timeframe)
+
+    total_rows = len(df)
+    split_idx = int(total_rows * train_pct / 100)
+    train_end = str(df.index[split_idx - 1].date())
+    test_start = str(df.index[split_idx].date())
+
+    if verbose:
+        print(f"\nWalk-Forward Validation for {strategy_name}")
+        print(f"Total data: {df.index.min().date()} to {df.index.max().date()} ({total_rows} bars)")
+        print(f"Train period ({train_pct}%): {df.index.min().date()} to {train_end} ({split_idx} bars)")
+        print(f"Test period ({100 - train_pct}%): {test_start} to {df.index.max().date()} ({total_rows - split_idx} bars)")
+
+    # Phase 1: Optimize on training data
+    if verbose:
+        print(f"\n--- Phase 1: Optimizing on training data ({n_trials} trials) ---")
+
+    # Map strategy names to their optimizer base name
+    optimizer_strategy = strategy_name.split("_sol")[0].split("_vet")[0].split("_baseline")[0].split("_universal")[0]
+
+    study = optimize(
+        strategy=optimizer_strategy,
+        n_trials=n_trials,
+        metric=metric,
+        start_date=str(df.index.min().date()),
+        end_date=train_end,
+    )
+
+    best_params = study.best_trial.params
+    if verbose:
+        print(f"\nBest training params (Trial #{study.best_trial.number}):")
+        for k, v in sorted(best_params.items()):
+            print(f"  {k}: {v}")
+
+    # Phase 2: Run in-sample with best params
+    if verbose:
+        print(f"\n--- Phase 2: In-sample backtest ---")
+
+    in_sample = run_backtest(
+        strategy_name=strategy_name,
+        data_source=data_source,
+        params_override=best_params,
+        save=False,
+        verbose=verbose,
+        notes=f"Walk-forward in-sample ({train_pct}%)",
+        end_date=train_end,
+    )
+
+    # Phase 3: Run out-of-sample with same params
+    if verbose:
+        print(f"\n--- Phase 3: Out-of-sample backtest ---")
+
+    out_of_sample = run_backtest(
+        strategy_name=strategy_name,
+        data_source=data_source,
+        params_override=best_params,
+        save=False,
+        verbose=verbose,
+        notes=f"Walk-forward out-of-sample ({100 - train_pct}%)",
+        start_date=test_start,
+    )
+
+    # Print report
+    print_walk_forward_report(in_sample, out_of_sample, train_pct)
+
+    return in_sample, out_of_sample
+
+
+def run_compare_all(
+    strategies: list = None,
+    data_source: str = "binance",
+    start_date: str = None,
+    end_date: str = None,
+    verbose: bool = True,
+):
+    """
+    Run all registered strategies on the same data and compare results.
+
+    Args:
+        strategies: List of strategy names to compare (None = all primary strategies)
+        data_source: Data source
+        start_date: Start date filter
+        end_date: End date filter
+        verbose: Whether to print progress
+
+    Returns:
+        List of BacktestResult objects
+    """
+    if strategies is None:
+        # Use primary strategies only (skip asset-specific variants and baselines)
+        strategies = ["v3", "v6", "v7", "v8", "v8_fast", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v16"]
+
+    if verbose:
+        print(f"\nComparing {len(strategies)} strategies head-to-head")
+        print(f"Data source: {data_source}")
+        if start_date:
+            print(f"Start date: {start_date}")
+        if end_date:
+            print(f"End date: {end_date}")
+        print("-" * 50)
+
+    results = []
+    for name in strategies:
+        if verbose:
+            print(f"\nRunning {name}...")
+        try:
+            result = run_backtest(
+                strategy_name=name,
+                data_source=data_source,
+                save=False,
+                verbose=False,
+                notes="compare-all",
+                start_date=start_date,
+                end_date=end_date,
+            )
+            results.append(result)
+            if verbose:
+                ret = result.total_return_pct
+                print(f"  {name}: {ret:+.1f}% return, {result.total_trades} trades")
+        except Exception as e:
+            if verbose:
+                print(f"  {name}: FAILED - {e}")
+
+    if results:
+        print_ranked_table(results)
+
+        # Save comparison
+        filepath = save_comparison(results, label="compare_all")
+        if verbose:
+            print(f"\nComparison saved to: {filepath}")
+
+    return results
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="SOL/USD Backtesting CLI",
@@ -375,6 +542,9 @@ Examples:
   python backtest.py -s v8_fast --asset VET   # Run on VET/USD data
   python backtest.py --list-results           # Show recent results
   python backtest.py --compare v8             # Compare V8 runs
+  python backtest.py -s v8_fast --walk-forward  # Walk-forward validation
+  python backtest.py --compare-all            # Compare all strategies
+  python backtest.py --compare-all --strategies v8_fast,v9,v10  # Compare subset
         """,
     )
 
@@ -479,10 +649,36 @@ Examples:
         help="End date for backtest (YYYY-MM-DD)"
     )
 
+    # Walk-forward validation
+    parser.add_argument(
+        "--walk-forward", "-wf",
+        action="store_true",
+        help="Run walk-forward validation (train/test split)"
+    )
+    parser.add_argument(
+        "--train-pct",
+        type=int,
+        default=70,
+        help="Percentage of data for training in walk-forward (default: 70)"
+    )
+
+    # Strategy comparison
+    parser.add_argument(
+        "--compare-all",
+        action="store_true",
+        help="Compare all primary strategies head-to-head on same data"
+    )
+    parser.add_argument(
+        "--strategies",
+        type=str,
+        default=None,
+        help="Comma-separated list of strategies to compare (default: all primary)"
+    )
+
     # Parameter overrides (common ones)
-    parser.add_argument("--trailing-pct", type=float, help="Override trailing stop %")
-    parser.add_argument("--fixed-stop-pct", type=float, help="Override fixed stop %")
-    parser.add_argument("--min-drop-pct", type=float, help="Override min drop % (V8)")
+    parser.add_argument("--trailing-pct", type=float, help="Override trailing stop pct")
+    parser.add_argument("--fixed-stop-pct", type=float, help="Override fixed stop pct")
+    parser.add_argument("--min-drop-pct", type=float, help="Override min drop pct (V8)")
 
     # Positional command (optional)
     parser.add_argument(
@@ -520,6 +716,32 @@ Examples:
         else:
             print(f"No result found with run ID: {args.detail}")
             return 1
+        return 0
+
+    # Handle walk-forward validation
+    if args.walk_forward:
+        run_walk_forward(
+            strategy_name=args.strategy,
+            data_source=args.data,
+            train_pct=args.train_pct,
+            n_trials=args.trials,
+            metric=args.metric,
+            verbose=not args.quiet,
+        )
+        return 0
+
+    # Handle strategy comparison
+    if args.compare_all:
+        strategy_list = None
+        if args.strategies:
+            strategy_list = [s.strip() for s in args.strategies.split(",")]
+        run_compare_all(
+            strategies=strategy_list,
+            data_source=args.data,
+            start_date=args.start_date,
+            end_date=args.end_date,
+            verbose=not args.quiet,
+        )
         return 0
 
     # Handle tuning mode

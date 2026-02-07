@@ -4,8 +4,18 @@
       "Bash(python3:*)",
       "Bash(git init:*)",
       "Bash(python:*)",
-      "Bash(sqlite3:*)",
-      "Bash(grep:*)"
+      "Bash(wc:*)",
+      "Bash(xargs:*)",
+      "Bash(ls:*)",
+      "Bash(grep:*)",
+      "Bash(du:*)",
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nRemove dead strategies, obsolete scripts, and stubs\n\nRemoved 4 unregistered strategies \\(v1, v2, v3.5, v4\\), 3 legacy scripts\nreplaced by backtest.py/optimizer.py, and misc dead files. Updated\nCLAUDE.md to reflect current project state.\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git config:*)",
+      "Bash(git push:*)",
+      "Bash(pip install:*)",
+      "Bash(git fetch:*)",
+      "Bash(git stash:*)"
     ]
   }
 }

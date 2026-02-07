@@ -243,6 +243,138 @@ def print_comparison_table(results: List[BacktestResult], limit: int = 10):
         print(f"Average Return: {avg_return:+.1f}%")
 
 
+def print_ranked_table(results: List[BacktestResult]):
+    """Print a ranked comparison table for strategy head-to-head comparison."""
+    if not results:
+        print("No results to compare.")
+        return
+
+    # Sort by return for ranking
+    ranked = sorted(results, key=lambda r: r.total_return_pct, reverse=True)
+
+    print(f"\n{'Rank':<6} {'Strategy':<12} {'Return':>10} {'Sharpe':>8} {'MaxDD':>8} {'Win%':>7} {'Trades':>7} {'Alpha':>10}")
+    print("=" * 78)
+
+    for i, r in enumerate(ranked, 1):
+        win_rate = f"{r.win_rate_pct:.0f}%" if r.win_rate_pct is not None else "N/A"
+        max_dd = f"{r.max_drawdown_pct:.1f}%" if r.max_drawdown_pct is not None else "N/A"
+        sharpe = f"{r.sharpe_ratio:.2f}" if r.sharpe_ratio is not None else "N/A"
+        alpha = f"{r.alpha_pct:+.1f}%" if r.alpha_pct is not None else "N/A"
+        print(f"  {i:<4} {r.strategy:<12} {r.total_return_pct:>+9.1f}% {sharpe:>8} {max_dd:>8} {win_rate:>7} {r.total_trades:>7} {alpha:>10}")
+
+    print("=" * 78)
+
+    # Highlight best by each metric
+    print("\nBest by metric:")
+    best_return = max(ranked, key=lambda r: r.total_return_pct)
+    print(f"  Return:   {best_return.strategy} ({best_return.total_return_pct:+.1f}%)")
+
+    sharpe_candidates = [r for r in ranked if r.sharpe_ratio is not None]
+    if sharpe_candidates:
+        best_sharpe = max(sharpe_candidates, key=lambda r: r.sharpe_ratio)
+        print(f"  Sharpe:   {best_sharpe.strategy} ({best_sharpe.sharpe_ratio:.2f})")
+
+    dd_candidates = [r for r in ranked if r.max_drawdown_pct is not None]
+    if dd_candidates:
+        best_dd = min(dd_candidates, key=lambda r: r.max_drawdown_pct)
+        print(f"  Max DD:   {best_dd.strategy} ({best_dd.max_drawdown_pct:.1f}%)")
+
+    wr_candidates = [r for r in ranked if r.win_rate_pct is not None and r.total_trades > 0]
+    if wr_candidates:
+        best_wr = max(wr_candidates, key=lambda r: r.win_rate_pct)
+        print(f"  Win Rate: {best_wr.strategy} ({best_wr.win_rate_pct:.0f}%)")
+
+    alpha_candidates = [r for r in ranked if r.alpha_pct is not None]
+    if alpha_candidates:
+        best_alpha = max(alpha_candidates, key=lambda r: r.alpha_pct)
+        print(f"  Alpha:    {best_alpha.strategy} ({best_alpha.alpha_pct:+.1f}%)")
+
+
+def save_comparison(results: List[BacktestResult], label: str = "compare_all") -> str:
+    """Save a strategy comparison to a single JSON file."""
+    ensure_results_dir()
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"{timestamp}_{label}.json"
+    filepath = RESULTS_DIR / filename
+
+    comparison = {
+        "timestamp": datetime.now().isoformat(),
+        "label": label,
+        "strategies": [asdict(r) for r in results],
+        "rankings": {
+            "by_return": [r.strategy for r in sorted(results, key=lambda r: r.total_return_pct, reverse=True)],
+        },
+    }
+
+    with open(filepath, "w") as f:
+        json.dump(comparison, f, indent=2, default=str)
+
+    return str(filepath)
+
+
+def print_walk_forward_report(in_sample: BacktestResult, out_of_sample: BacktestResult, train_pct: int):
+    """Print side-by-side in-sample vs out-of-sample metrics."""
+    print(f"\n{'='*70}")
+    print(f"WALK-FORWARD VALIDATION REPORT")
+    print(f"Strategy: {in_sample.strategy}  |  Train: {train_pct}% / Test: {100 - train_pct}%")
+    print(f"{'='*70}")
+
+    print(f"\n{'Metric':<25} {'In-Sample':>18} {'Out-of-Sample':>18}")
+    print("-" * 65)
+
+    print(f"{'Date Range':<25} {(in_sample.start_date or '?') + ' to':>18}")
+    print(f"{'':<25} {(in_sample.end_date or '?'):>18} {(out_of_sample.start_date or '?') + ' to':>18}")
+    print(f"{'':<25} {'':<18} {(out_of_sample.end_date or '?'):>18}")
+    print()
+
+    # Format helpers
+    def fmt_pct(v):
+        return f"{v:+.2f}%" if v is not None else "N/A"
+
+    def fmt_dollar(v):
+        return f"${v:,.2f}" if v is not None else "N/A"
+
+    def fmt_num(v):
+        return f"{v}" if v is not None else "N/A"
+
+    def fmt_ratio(v):
+        return f"{v:.2f}" if v is not None else "N/A"
+
+    rows = [
+        ("Final Value", fmt_dollar(in_sample.final_value), fmt_dollar(out_of_sample.final_value)),
+        ("Total Return", fmt_pct(in_sample.total_return_pct), fmt_pct(out_of_sample.total_return_pct)),
+        ("Total Trades", fmt_num(in_sample.total_trades), fmt_num(out_of_sample.total_trades)),
+        ("Win Rate", fmt_pct(in_sample.win_rate_pct), fmt_pct(out_of_sample.win_rate_pct)),
+        ("Max Drawdown", fmt_pct(in_sample.max_drawdown_pct), fmt_pct(out_of_sample.max_drawdown_pct)),
+        ("Sharpe Ratio", fmt_ratio(in_sample.sharpe_ratio), fmt_ratio(out_of_sample.sharpe_ratio)),
+        ("Buy & Hold Return", fmt_pct(in_sample.buy_hold_return_pct), fmt_pct(out_of_sample.buy_hold_return_pct)),
+        ("Alpha", fmt_pct(in_sample.alpha_pct), fmt_pct(out_of_sample.alpha_pct)),
+    ]
+
+    for label, is_val, oos_val in rows:
+        print(f"{label:<25} {is_val:>18} {oos_val:>18}")
+
+    print(f"\n{'-'*65}")
+
+    # Degradation analysis
+    if in_sample.total_return_pct and out_of_sample.total_return_pct:
+        degradation = in_sample.total_return_pct - out_of_sample.total_return_pct
+        ratio = out_of_sample.total_return_pct / in_sample.total_return_pct if in_sample.total_return_pct != 0 else 0
+        print(f"\nReturn degradation: {degradation:+.2f}% (OOS is {ratio:.0%} of IS)")
+
+        if ratio >= 0.5:
+            print("Assessment: GOOD - Strategy retains majority of in-sample performance")
+        elif ratio >= 0.2:
+            print("Assessment: FAIR - Notable degradation, possible overfitting")
+        elif ratio > 0:
+            print("Assessment: POOR - Severe degradation, likely overfit")
+        else:
+            print("Assessment: FAIL - Strategy loses money out-of-sample, likely overfit")
+
+    print(f"{'='*70}\n")
+
+
 def compare_strategies(strategy_filter: Optional[str] = None) -> List[BacktestResult]:
     """
     Load and compare results, optionally filtering by strategy.
