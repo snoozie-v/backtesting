@@ -967,8 +967,12 @@ def analyze_importance(strategy: str):
         print(f"No studies found in {RESULTS_DIR}/optuna_{strategy}.db")
         return
 
-    # Use the study with the most trials
-    best_summary = max(study_summaries, key=lambda s: s.n_trials)
+    # Use the study with the best non-zero value, falling back to most trials
+    summaries_with_value = [s for s in study_summaries if s.best_trial and s.best_trial.value and s.best_trial.value > 0]
+    if summaries_with_value:
+        best_summary = max(summaries_with_value, key=lambda s: s.best_trial.value)
+    else:
+        best_summary = max(study_summaries, key=lambda s: s.n_trials)
     study = optuna.load_study(study_name=best_summary.study_name, storage=storage)
 
     completed_trials = [t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE]
