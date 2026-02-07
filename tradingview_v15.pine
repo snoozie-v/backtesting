@@ -1,0 +1,484 @@
+//@version=5
+indicator("V15 - Zone Trader (1H Entries, 4H Trend) + 1R-3R + Breakeven/Trailing", overlay=true, max_lines_count=500, max_labels_count=500)
+
+// ============================================================================
+// STRATEGY NOTATIONS & COMMENTS
+// ============================================================================
+// This script implements the V15 Mechanical Trading Rules as closely as possible in Pine Script for visualization and historical simulation.
+// Key alignments:
+// - Pre-Session Checklist: 4H trend detection with deadzone (shown in dashboard as UPTREND/DOWNTREND/FLAT).
+// - Entry Type A (Crossover) & Type B (Pullback): Implemented with priority to crossover if both occur same bar.
+// - Volume Confirmation: Requires volume > 20-period SMA (toggleable).
+// - Cooldown: >=6 bars since last signal (shown in dashboard).
+// - ATR-based SL/TP: SL at 1.5x ATR, TP at 3.0x ATR (configurable).
+// - Exits: TP hit, SL hit, 4H Trend Reversal, Time Exit (48 bars).
+// - Breakeven Stop (Mandatory): Move SL to entry when price reaches +1R.
+// - Trailing Stop (Optional): Move SL to +1R profit when price reaches +2R.
+// - Position Sizing: Not simulated (Pine limitation); use external calculator: Risk = 1% equity, Size = Risk / (1.5x ATR).
+// - Monitoring: Script runs on 1H; for 15M checks, use lower TF but signals on 1H closes.
+// - Pairs: Apply to SOL/USD, BTC/USD, ETH/USD separately.
+// - Risk Rules: Dashboard shows SL/TP distances; enforce 1% risk, daily/weekly stops manually.
+// Limitations: No live orders; simulates historical trades for win/loss stats. No leverage simulation.
+
+// ============================================================================
+// INPUTS
+// ============================================================================
+
+// 4H Trend
+ema_fast_4h_len   = input.int(9,   "4H EMA Fast")
+ema_slow_4h_len   = input.int(21,  "4H EMA Slow")
+deadzone_pct      = input.float(0.1, "Trend Deadzone %", step=0.05)
+
+// 1H Entry
+ema_fast_1h_len   = input.int(9,   "1H EMA Fast")
+ema_slow_1h_len   = input.int(21,  "1H EMA Slow")
+
+use_crossover     = input.bool(true,  "Enable Crossover Entry")
+use_pullback      = input.bool(true,  "Enable Pullback Entry")
+
+// Volume
+vol_sma_len       = input.int(20, "Volume SMA Length")
+use_volume        = input.bool(true, "Require Volume Confirmation")
+
+// ATR & Risk-Reward
+atr_len           = input.int(14, "ATR Length")
+stop_mult         = input.float(1.5, "Stop Loss Multiplier", step=0.25)
+tp_mult           = input.float(3.0, "Main Take Profit Multiplier", step=0.5)
+
+// R Levels for Partial/Trailing
+tp_mult_1r        = input.float(1.0, "1R Multiplier (Breakeven Trigger)", step=0.25)
+tp_mult_2r        = input.float(2.0, "2R Multiplier (Trailing Trigger)", step=0.25)
+tp_mult_3r        = input.float(3.0, "3R Multiplier", step=0.25)
+
+// Exits & Cooldown
+exit_on_reversal  = input.bool(true, "Exit on Trend Reversal")
+max_hold_bars     = input.int(48,   "Max Hold Bars (1H) - Time Exit")
+cooldown_bars     = input.int(6,    "Cooldown Bars (1H)")
+
+// Stop Management
+use_breakeven     = input.bool(true, "Enable Breakeven at +1R")
+use_trailing      = input.bool(true, "Enable Trailing at +2R")
+
+// Display
+show_tp_sl_lines  = input.bool(true, "Show TP/SL Lines")
+show_trade_labels = input.bool(true, "Show Trade Plan Labels")
+show_dynamic_sl   = input.bool(true, "Show Dynamic SL Line")
+show_partial_labels = input.bool(true, "Show Partial TP Labels")
+
+// Account & Risk
+account_equity    = input.float(10000, "Account Equity ($)", step=1000)
+daily_loss_limit  = input.int(3, "Daily Loss Limit", minval=1)
+
+// ============================================================================
+// 4H TREND (Pre-Session: Classify UPTREND/DOWNTREND/FLAT)
+// ============================================================================
+
+ema9_4h  = request.security(syminfo.tickerid, "240", ta.ema(close, ema_fast_4h_len))
+ema21_4h = request.security(syminfo.tickerid, "240", ta.ema(close, ema_slow_4h_len))
+
+deadzone    = ema21_4h * (deadzone_pct / 100)
+uptrend_4h  = ema9_4h > (ema21_4h + deadzone)
+downtrend_4h = ema9_4h < (ema21_4h - deadzone)
+
+plot(ema9_4h,  color=color.blue,    title="4H EMA Fast", linewidth=2)
+plot(ema21_4h, color=color.orange,  title="4H EMA Slow", linewidth=2)
+
+// ============================================================================
+// 1H EMAs & Signals (Entries on 1H Closes)
+// ============================================================================
+
+ema9_1h  = ta.ema(close, ema_fast_1h_len)
+ema21_1h = ta.ema(close, ema_slow_1h_len)
+
+plot(ema9_1h,  color=color.new(color.blue, 50),    title="1H EMA Fast")
+plot(ema21_1h, color=color.new(color.orange, 50),  title="1H EMA Slow")
+
+// Entry Type A: Crossover
+long_crossover  = ta.crossover(ema9_1h, ema21_1h)
+short_crossover = ta.crossunder(ema9_1h, ema21_1h)
+
+// Entry Type B: Pullback
+long_pullback  = low <= ema9_1h and close > ema9_1h and ema9_1h > ema21_1h
+short_pullback = high >= ema9_1h and close < ema9_1h and ema9_1h < ema21_1h
+
+// ============================================================================
+// VOLUME + ATR
+// ============================================================================
+
+vol_sma     = ta.sma(volume, vol_sma_len)
+high_volume = volume > vol_sma
+vol_ratio   = vol_sma > 0 ? volume / vol_sma : 0.0
+
+atr = ta.atr(atr_len)
+
+// ============================================================================
+// COOLDOWN (Pre-Session: >=6 bars since last signal)
+// ============================================================================
+
+var int bars_since_signal = 999
+bars_since_signal := bars_since_signal + 1
+
+// ============================================================================
+// ENTRY CONDITIONS (No open position, Cooldown OK)
+// ============================================================================
+
+vol_ok      = not use_volume or high_volume
+cooldown_ok = bars_since_signal >= cooldown_bars
+
+long_cross_signal  = use_crossover and long_crossover  and uptrend_4h and vol_ok and cooldown_ok
+short_cross_signal = use_crossover and short_crossover and downtrend_4h and vol_ok and cooldown_ok
+
+long_pull_signal  = use_pullback and long_pullback  and uptrend_4h and vol_ok and cooldown_ok
+short_pull_signal = use_pullback and short_pullback and downtrend_4h and vol_ok and cooldown_ok
+
+long_signal  = long_cross_signal or (long_pull_signal and not long_cross_signal)
+short_signal = short_cross_signal or (short_pull_signal and not short_cross_signal)
+
+var string entry_type = ""
+if long_cross_signal or short_cross_signal
+    entry_type := "CROSS"
+else if long_pull_signal or short_pull_signal
+    entry_type := "PULLBACK"
+
+if long_signal or short_signal
+    bars_since_signal := 0
+
+// ============================================================================
+// RISK -> REWARD LEVELS (SL/TP Fixed; 1R/2R/3R for Labels/Lines/Trailing)
+// ============================================================================
+
+// Long
+long_sl    = close - (atr * stop_mult)
+long_tp1r  = close + (atr * tp_mult_1r)
+long_tp2r  = close + (atr * tp_mult_2r)
+long_tp3r  = close + (atr * tp_mult_3r)
+long_tp    = close + (atr * tp_mult)
+
+// Short
+short_sl   = close + (atr * stop_mult)
+short_tp1r = close - (atr * tp_mult_1r)
+short_tp2r = close - (atr * tp_mult_2r)
+short_tp3r = close - (atr * tp_mult_3r)
+short_tp   = close - (atr * tp_mult)
+
+// ============================================================================
+// TRADE TRACKING (Simulate Historical Trades)
+// ============================================================================
+
+var float active_entry = na
+var float active_sl    = na
+var float active_tp    = na
+var float active_tp1r  = na
+var float active_tp2r  = na
+var int   active_direction = 0
+var int   active_bar   = 0
+var int   bars_in_trade = 0
+
+// Dynamic SL state: 0=initial, 1=breakeven, 2=trailing
+var int sl_state = 0
+
+// Partial TP tracking
+var bool hit_1r = false
+var bool hit_2r = false
+var bool hit_3r = false
+var float active_tp3r = na
+var float active_risk_dist = na
+
+// Daily loss tracking
+var int losses_today = 0
+var int current_day = 0
+
+if active_direction != 0
+    bars_in_trade := bars_in_trade + 1
+
+// Daily loss reset
+if dayofweek != current_day
+    current_day := dayofweek
+    losses_today := 0
+
+// Trend Reversal Exit
+trend_rev_exit_long  = exit_on_reversal and active_direction == 1 and downtrend_4h
+trend_rev_exit_short = exit_on_reversal and active_direction == -1 and uptrend_4h
+
+// Time Exit
+time_exit = active_direction != 0 and bars_in_trade >= max_hold_bars
+
+// ============================================================================
+// STOP MANAGEMENT (Breakeven & Trailing - Never Widen SL)
+// ============================================================================
+
+if active_direction == 1
+    // Breakeven: Move SL to entry at +1R (if not already better)
+    if use_breakeven and high >= active_tp1r and active_sl < active_entry
+        active_sl := active_entry
+        if sl_state < 1
+            sl_state := 1
+    // Trailing: Move SL to +1R profit at +2R (if not already better)
+    if use_trailing and high >= active_tp2r and active_sl < active_entry + (atr * tp_mult_1r)
+        active_sl := active_entry + (atr * tp_mult_1r)
+        sl_state := 2
+
+if active_direction == -1
+    // Breakeven: Move SL to entry at +1R (down for short)
+    if use_breakeven and low <= active_tp1r and active_sl > active_entry
+        active_sl := active_entry
+        if sl_state < 1
+            sl_state := 1
+    // Trailing: Move SL to +1R profit at +2R
+    if use_trailing and low <= active_tp2r and active_sl > active_entry - (atr * tp_mult_1r)
+        active_sl := active_entry - (atr * tp_mult_1r)
+        sl_state := 2
+
+// ============================================================================
+// R-LEVEL HIT DETECTION (Partial TP Simulation)
+// ============================================================================
+
+if active_direction == 1
+    if not hit_1r and high >= active_tp1r
+        hit_1r := true
+        if show_partial_labels
+            label.new(bar_index, active_tp1r, "1R ⅓", color=color.new(color.teal, 30), textcolor=color.white, style=label.style_label_down, size=size.tiny)
+    if not hit_2r and high >= active_tp2r
+        hit_2r := true
+        if show_partial_labels
+            label.new(bar_index, active_tp2r, "2R ⅓", color=color.new(color.teal, 30), textcolor=color.white, style=label.style_label_down, size=size.tiny)
+    if not na(active_tp3r) and not hit_3r and high >= active_tp3r
+        hit_3r := true
+        if show_partial_labels
+            label.new(bar_index, active_tp3r, "3R ⅓", color=color.new(color.teal, 30), textcolor=color.white, style=label.style_label_down, size=size.tiny)
+
+if active_direction == -1
+    if not hit_1r and low <= active_tp1r
+        hit_1r := true
+        if show_partial_labels
+            label.new(bar_index, active_tp1r, "1R ⅓", color=color.new(color.teal, 30), textcolor=color.white, style=label.style_label_up, size=size.tiny)
+    if not hit_2r and low <= active_tp2r
+        hit_2r := true
+        if show_partial_labels
+            label.new(bar_index, active_tp2r, "2R ⅓", color=color.new(color.teal, 30), textcolor=color.white, style=label.style_label_up, size=size.tiny)
+    if not na(active_tp3r) and not hit_3r and low <= active_tp3r
+        hit_3r := true
+        if show_partial_labels
+            label.new(bar_index, active_tp3r, "3R ⅓", color=color.new(color.teal, 30), textcolor=color.white, style=label.style_label_up, size=size.tiny)
+
+// ============================================================================
+// EXIT LOGIC (TP Fixed; Check Dynamic SL)
+// ============================================================================
+
+// Long Exits
+if active_direction == 1
+    if high >= active_tp
+        active_direction := 0
+        active_entry := na
+        bars_in_trade := 0
+        sl_state := 0
+        hit_1r := false
+        hit_2r := false
+        hit_3r := false
+    else if low <= active_sl
+        // Only count as daily loss if SL is still below entry (not at breakeven/trailing)
+        if active_sl < active_entry
+            losses_today += 1
+        active_direction := 0
+        active_entry := na
+        bars_in_trade := 0
+        sl_state := 0
+        hit_1r := false
+        hit_2r := false
+        hit_3r := false
+    else if trend_rev_exit_long
+        if close <= active_entry
+            losses_today += 1
+        active_direction := 0
+        active_entry := na
+        bars_in_trade := 0
+        sl_state := 0
+        hit_1r := false
+        hit_2r := false
+        hit_3r := false
+    else if time_exit
+        if close <= active_entry
+            losses_today += 1
+        active_direction := 0
+        active_entry := na
+        bars_in_trade := 0
+        sl_state := 0
+        hit_1r := false
+        hit_2r := false
+        hit_3r := false
+
+// Short Exits
+if active_direction == -1
+    if low <= active_tp
+        active_direction := 0
+        active_entry := na
+        bars_in_trade := 0
+        sl_state := 0
+        hit_1r := false
+        hit_2r := false
+        hit_3r := false
+    else if high >= active_sl
+        // Only count as daily loss if SL is still above entry (not at breakeven/trailing)
+        if active_sl > active_entry
+            losses_today += 1
+        active_direction := 0
+        active_entry := na
+        bars_in_trade := 0
+        sl_state := 0
+        hit_1r := false
+        hit_2r := false
+        hit_3r := false
+    else if trend_rev_exit_short
+        if close >= active_entry
+            losses_today += 1
+        active_direction := 0
+        active_entry := na
+        bars_in_trade := 0
+        sl_state := 0
+        hit_1r := false
+        hit_2r := false
+        hit_3r := false
+    else if time_exit
+        if close >= active_entry
+            losses_today += 1
+        active_direction := 0
+        active_entry := na
+        bars_in_trade := 0
+        sl_state := 0
+        hit_1r := false
+        hit_2r := false
+        hit_3r := false
+
+// ============================================================================
+// NEW ENTRIES
+// ============================================================================
+
+if long_signal and active_direction == 0
+    active_entry  := close
+    active_sl     := long_sl
+    active_tp     := long_tp
+    active_tp1r   := long_tp1r
+    active_tp2r   := long_tp2r
+    active_tp3r   := long_tp3r
+    active_risk_dist := atr * stop_mult
+    active_direction := 1
+    active_bar    := bar_index
+    bars_in_trade := 0
+    sl_state := 0
+    hit_1r := false
+    hit_2r := false
+    hit_3r := false
+
+    if show_tp_sl_lines
+        line.new(bar_index, long_sl, bar_index + 20, long_sl, color=color.new(color.red, 50), width=1, style=line.style_dotted)
+        line.new(bar_index, long_tp, bar_index + 20, long_tp, color=color.new(color.green, 50), width=1, style=line.style_dotted)
+
+    if show_trade_labels
+        long_label_text = "LONG " + entry_type + "\n" +
+             "Entry: $" + str.tostring(close, "#.####") + "\n" +
+             "SL:    $" + str.tostring(long_sl, "#.####") + "\n" +
+             "1R:    $" + str.tostring(long_tp1r, "#.####") + " (Breakeven)" + "\n" +
+             "2R:    $" + str.tostring(long_tp2r, "#.####") + " (Trailing)" + "\n" +
+             "3R:    $" + str.tostring(long_tp3r, "#.####") + "\n" +
+             "TP:    $" + str.tostring(long_tp, "#.####") + " (Main)" + "\n" +
+             "RR:    " + str.tostring(tp_mult / stop_mult, "#.#") + ":1\n" +
+             "Vol:   " + str.tostring(vol_ratio, "#.#") + "x"
+        label.new(bar_index, close, long_label_text, color=color.new(color.green, 15), textcolor=color.white, style=label.style_label_up, size=size.normal)
+
+if short_signal and active_direction == 0
+    active_entry  := close
+    active_sl     := short_sl
+    active_tp     := short_tp
+    active_tp1r   := short_tp1r
+    active_tp2r   := short_tp2r
+    active_tp3r   := short_tp3r
+    active_risk_dist := atr * stop_mult
+    active_direction := -1
+    active_bar    := bar_index
+    bars_in_trade := 0
+    sl_state := 0
+    hit_1r := false
+    hit_2r := false
+    hit_3r := false
+
+    if show_tp_sl_lines
+        line.new(bar_index, short_sl, bar_index + 20, short_sl, color=color.new(color.red, 50), width=1, style=line.style_dotted)
+        line.new(bar_index, short_tp, bar_index + 20, short_tp, color=color.new(color.green, 50), width=1, style=line.style_dotted)
+
+    if show_trade_labels
+        short_label_text = "SHORT " + entry_type + "\n" +
+             "Entry: $" + str.tostring(close, "#.####") + "\n" +
+             "SL:    $" + str.tostring(short_sl, "#.####") + "\n" +
+             "1R:    $" + str.tostring(short_tp1r, "#.####") + " (Breakeven)" + "\n" +
+             "2R:    $" + str.tostring(short_tp2r, "#.####") + " (Trailing)" + "\n" +
+             "3R:    $" + str.tostring(short_tp3r, "#.####") + "\n" +
+             "TP:    $" + str.tostring(short_tp, "#.####") + " (Main)" + "\n" +
+             "RR:    " + str.tostring(tp_mult / stop_mult, "#.#") + ":1\n" +
+             "Vol:   " + str.tostring(vol_ratio, "#.#") + "x"
+        label.new(bar_index, close, short_label_text, color=color.new(color.red, 15), textcolor=color.white, style=label.style_label_down, size=size.normal)
+
+// ============================================================================
+// PLOT SIGNALS (Crossover: Triangles; Pullback: Circles)
+// ============================================================================
+
+plotshape(long_cross_signal, title="Long Crossover", location=location.belowbar, color=color.green, style=shape.triangleup, size=size.small)
+plotshape(short_cross_signal, title="Short Crossover", location=location.abovebar, color=color.red, style=shape.triangledown, size=size.small)
+
+plotshape(long_pull_signal and not long_cross_signal, title="Long Pullback", location=location.belowbar, color=color.lime, style=shape.circle, size=size.small)
+plotshape(short_pull_signal and not short_cross_signal, title="Short Pullback", location=location.abovebar, color=color.fuchsia, style=shape.circle, size=size.small)
+
+// Trend Background
+bgcolor(uptrend_4h ? color.new(color.green, 92) : downtrend_4h ? color.new(color.red, 92) : color.new(color.gray, 95), title="Trend Background")
+
+// Dynamic SL Line
+dynamic_sl_val = show_dynamic_sl and active_direction != 0 ? active_sl : na
+dynamic_sl_color = sl_state == 2 ? color.green : sl_state == 1 ? color.yellow : color.red
+plot(dynamic_sl_val, title="Dynamic SL", color=dynamic_sl_color, style=plot.style_stepline, linewidth=2)
+
+// ============================================================================
+// DASHBOARD
+// ============================================================================
+
+// Position sizing calc
+risk_dollars = account_equity * 0.01
+sl_dist = atr * stop_mult
+position_units = sl_dist > 0 ? risk_dollars / sl_dist : 0.0
+
+var table info = table.new(position.top_right, 2, 7, bgcolor=color.new(color.black, 80))
+if barstate.islast
+    table.cell(info, 0, 0, "4H Trend", text_color=color.white)
+    table.cell(info, 1, 0, uptrend_4h ? "UPTREND" : downtrend_4h ? "DOWNTREND" : "FLAT (DZ)", text_color=uptrend_4h ? color.green : downtrend_4h ? color.red : color.yellow)
+
+    table.cell(info, 0, 1, "Position", text_color=color.white)
+    pos_text = active_direction == 1 ? "LONG" : active_direction == -1 ? "SHORT" : "FLAT"
+    if active_direction != 0
+        pos_text := pos_text + " " + str.tostring(bars_in_trade) + "/" + str.tostring(max_hold_bars)
+    table.cell(info, 1, 1, pos_text, text_color=active_direction == 1 ? color.green : active_direction == -1 ? color.red : color.gray)
+
+    table.cell(info, 0, 2, "Cooldown", text_color=color.white)
+    cooldown_remaining = math.max(0, cooldown_bars - bars_since_signal)
+    table.cell(info, 1, 2, cooldown_remaining > 0 ? str.tostring(cooldown_remaining) + " bars" : "READY", text_color=cooldown_remaining > 0 ? color.yellow : color.green)
+
+    table.cell(info, 0, 3, "SL / TP Dist", text_color=color.white)
+    table.cell(info, 1, 3, "$" + str.tostring(atr * stop_mult, "#.##") + " / $" + str.tostring(atr * tp_mult, "#.##"), text_color=color.white)
+
+    table.cell(info, 0, 4, "Vol", text_color=color.white)
+    table.cell(info, 1, 4, str.tostring(vol_ratio, "#.#") + "x", text_color=high_volume ? color.green : color.gray)
+
+    table.cell(info, 0, 5, "Sizing", text_color=color.white)
+    table.cell(info, 1, 5, "$" + str.tostring(risk_dollars, "#.##") + " | " + str.tostring(position_units, "#.#") + " units", text_color=color.white)
+
+    table.cell(info, 0, 6, "Day Losses", text_color=color.white)
+    daily_color = losses_today >= daily_loss_limit ? color.red : color.green
+    table.cell(info, 1, 6, str.tostring(losses_today) + "/" + str.tostring(daily_loss_limit), text_color=daily_color)
+
+// ============================================================================
+// ALERTS
+// ============================================================================
+
+alertcondition(long_cross_signal, "V15 Long Crossover", "V15: Long crossover entry - 1H EMA cross + 4H uptrend + volume")
+alertcondition(short_cross_signal, "V15 Short Crossover", "V15: Short crossover entry - 1H EMA cross + 4H downtrend + volume")
+alertcondition(long_pull_signal and not long_cross_signal, "V15 Long Pullback", "V15: Long pullback entry - 1H EMA9 touch + 4H uptrend + volume")
+alertcondition(short_pull_signal and not short_cross_signal, "V15 Short Pullback", "V15: Short pullback entry - 1H EMA9 touch + 4H downtrend + volume")
+alertcondition(trend_rev_exit_long or trend_rev_exit_short, "V15 Trend Reversal", "V15: 4H trend reversal - consider exit")
+alertcondition(time_exit, "V15 Time Exit", "V15: Max hold time reached - close position")

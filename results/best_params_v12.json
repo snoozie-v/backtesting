@@ -1,0 +1,13 @@
+{
+  "ema_fast": 9,
+  "ema_slow": 25,
+  "trend_strength": 1.2,
+  "rsi_period": 11,
+  "rsi_oversold": 29,
+  "rsi_overbought": 72,
+  "pullback_pct": 1.25,
+  "tp_pct": 0.5,
+  "sl_pct": 6.0,
+  "position_pct": 90.0,
+  "cooldown_bars": 7
+}

@@ -1,0 +1,28 @@
+{
+  "params": {
+    "trend_lookback": 6,
+    "min_trend_candles": 4,
+    "range_approach_pct": 1.2,
+    "range_min_range_pct": 3.5,
+    "range_buffer_pct": 6.0,
+    "range_rr_ratio": 1.6,
+    "range_cooldown_bars": 4,
+    "trend_approach_pct": 0.7,
+    "trend_min_range_pct": 1.0,
+    "trend_buffer_pct": 7.0,
+    "trend_rr_ratio": 4.0,
+    "trend_cooldown_bars": 20,
+    "risk_per_trade_pct": 1.0,
+    "max_position_pct": 45.0
+  },
+  "metrics": {
+    "final_value": 443.2385703288983,
+    "total_return_pct": -95.56761429671101,
+    "total_trades": 1289,
+    "win_rate_pct": 55.46935608999224,
+    "max_drawdown_pct": 96.13413510623666,
+    "sharpe_ratio": 0
+  },
+  "trial_number": 39,
+  "timestamp": "2026-02-02T11:38:50.197565"
+}

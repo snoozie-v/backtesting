@@ -1,0 +1,32 @@
+{
+  "params": {
+    "ema_fast_4h_period": 9,
+    "ema_slow_4h_period": 21,
+    "trend_deadzone_pct": 0.45,
+    "ema_fast_1h_period": 10,
+    "ema_slow_1h_period": 22,
+    "enable_crossover_entry": true,
+    "enable_pullback_entry": true,
+    "vol_sma_period": 15,
+    "require_volume": true,
+    "atr_period": 18,
+    "stop_multiplier": 1.75,
+    "tp_multiplier": 3.0,
+    "exit_on_trend_reversal": false,
+    "max_hold_bars": 36,
+    "risk_per_trade_pct": 3.0,
+    "cooldown_bars": 3
+  },
+  "metrics": {
+    "optimizer_score": 132.62786211787278,
+    "final_value": 23262.78621178728,
+    "total_return_pct": 132.62786211787278,
+    "total_trades": 139,
+    "trades_per_day": 0.562753036437247,
+    "win_rate_pct": 52.51798561151079,
+    "max_drawdown_pct": 13.402372094512558,
+    "sharpe_ratio": 0
+  },
+  "trial_number": 81,
+  "timestamp": "2026-02-03T16:51:04.135233"
+}

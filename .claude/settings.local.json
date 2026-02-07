@@ -3,7 +3,9 @@
     "allow": [
       "Bash(python3:*)",
       "Bash(git init:*)",
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "Bash(sqlite3:*)",
+      "Bash(grep:*)"
     ]
   }
 }

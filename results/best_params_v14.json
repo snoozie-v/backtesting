@@ -1,0 +1,26 @@
+{
+  "params": {
+    "ema_fast": 9,
+    "ema_slow": 26,
+    "entry_ema_fast": 15,
+    "entry_ema_slow": 15,
+    "vol_sma_period": 10,
+    "require_volume": true,
+    "atr_period": 20,
+    "stop_multiplier": 1.0,
+    "tp_multiplier": 4.5,
+    "exit_on_trend_reversal": false,
+    "cooldown_bars": 12,
+    "position_pct": 84.0
+  },
+  "metrics": {
+    "final_value": 10000.0,
+    "total_return_pct": 0.0,
+    "total_trades": 0,
+    "win_rate_pct": 0,
+    "max_drawdown_pct": 0,
+    "sharpe_ratio": 0
+  },
+  "trial_number": 10,
+  "timestamp": "2026-02-02T22:08:07.295728"
+}

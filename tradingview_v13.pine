@@ -1,0 +1,178 @@
+//@version=5
+indicator("V13 Trend Momentum Rider", overlay=true, max_lines_count=100, max_labels_count=100)
+
+// === INPUTS ===
+ema_fast_len = input.int(8, "EMA Fast")
+ema_slow_len = input.int(21, "EMA Slow")
+trend_strength_min = input.float(0.8, "Min Trend Strength %")
+vol_sma_period = input.int(20, "Volume SMA Period")
+vol_expansion_mult = input.float(1.3, "Volume Expansion Multiplier")
+vol_climax_mult = input.float(2.5, "Volume Climax Multiplier")
+rsi_period = input.int(14, "RSI Period")
+rsi_oversold = input.int(45, "RSI Oversold")
+rsi_overbought = input.int(55, "RSI Overbought")
+obv_ema_period = input.int(10, "OBV EMA Period")
+atr_period = input.int(14, "ATR Period")
+atr_trailing_mult = input.float(2.5, "ATR Trailing Multiplier")
+atr_initial_mult = input.float(1.5, "ATR Initial Stop Multiplier")
+cooldown_bars = input.int(8, "Cooldown Bars")
+
+// === 4H DATA (from 15m chart) ===
+ema_fast_4h = request.security(syminfo.tickerid, "240", ta.ema(close, ema_fast_len))
+ema_slow_4h = request.security(syminfo.tickerid, "240", ta.ema(close, ema_slow_len))
+atr_4h = request.security(syminfo.tickerid, "240", ta.atr(atr_period))
+obv_4h = request.security(syminfo.tickerid, "240", ta.obv)
+obv_ema_4h = request.security(syminfo.tickerid, "240", ta.ema(ta.obv, obv_ema_period))
+
+// === TREND DETECTION ===
+trend_diff = ((ema_fast_4h - ema_slow_4h) / ema_slow_4h) * 100
+is_uptrend = trend_diff > trend_strength_min
+is_downtrend = trend_diff < -trend_strength_min
+
+// === VOLUME ANALYSIS ===
+vol_sma = ta.sma(volume, vol_sma_period)
+vol_ratio = vol_sma > 0 ? volume / vol_sma : 0
+vol_expansion = vol_ratio >= vol_expansion_mult
+vol_climax = vol_ratio >= vol_climax_mult
+
+// === OBV CONFIRMATION ===
+obv_bullish = obv_4h > obv_ema_4h
+obv_bearish = obv_4h < obv_ema_4h
+
+// === RSI ===
+rsi = ta.rsi(close, rsi_period)
+
+// === COOLDOWN ===
+var int bars_since_signal = 999
+bars_since_signal := bars_since_signal + 1
+
+// === ENTRY CONDITIONS ===
+long_condition = is_uptrend and vol_expansion and rsi < rsi_overbought and obv_bullish
+short_condition = is_downtrend and vol_expansion and rsi > rsi_oversold and obv_bearish
+
+long_signal = long_condition and bars_since_signal >= cooldown_bars
+short_signal = short_condition and bars_since_signal >= cooldown_bars
+
+if long_signal or short_signal
+    bars_since_signal := 0
+
+// === ATR STOP LEVELS ===
+atr_trail_distance = atr_4h * atr_trailing_mult
+atr_initial_distance = atr_4h * atr_initial_mult
+
+// === TRADE TRACKING ===
+var float active_entry = na
+var float active_hwm = na
+var float active_lwm = na
+var float initial_stop = na
+var int active_direction = 0
+var int total_wins = 0
+var int total_losses = 0
+
+// Track positions
+if active_direction == 1
+    active_hwm := math.max(active_hwm, high)
+    trailing_stop = active_hwm - atr_trail_distance
+    active_stop = math.max(trailing_stop, initial_stop)
+    if low <= active_stop
+        if close > active_entry
+            total_wins := total_wins + 1
+            label.new(bar_index, low, "WIN", color=color.green, textcolor=color.white, style=label.style_label_up, size=size.small)
+        else
+            total_losses := total_losses + 1
+            label.new(bar_index, low, "LOSS", color=color.red, textcolor=color.white, style=label.style_label_up, size=size.small)
+        active_direction := 0
+        active_entry := na
+
+if active_direction == -1
+    active_lwm := math.min(active_lwm, low)
+    trailing_stop = active_lwm + atr_trail_distance
+    active_stop = math.min(trailing_stop, initial_stop)
+    if high >= active_stop
+        if close < active_entry
+            total_wins := total_wins + 1
+            label.new(bar_index, high, "WIN", color=color.green, textcolor=color.white, style=label.style_label_down, size=size.small)
+        else
+            total_losses := total_losses + 1
+            label.new(bar_index, high, "LOSS", color=color.red, textcolor=color.white, style=label.style_label_down, size=size.small)
+        active_direction := 0
+        active_entry := na
+
+// New entries
+if long_signal and active_direction == 0
+    active_entry := close
+    active_hwm := close
+    initial_stop := close - atr_initial_distance
+    active_direction := 1
+    label.new(bar_index, low,
+         "LONG\nEntry: $" + str.tostring(close, "#.##") +
+         "\nATR Stop: $" + str.tostring(initial_stop, "#.##") +
+         "\nVol: " + str.tostring(vol_ratio, "#.#") + "x",
+         color=color.new(color.green, 20), textcolor=color.white, style=label.style_label_up)
+
+if short_signal and active_direction == 0
+    active_entry := close
+    active_lwm := close
+    initial_stop := close + atr_initial_distance
+    active_direction := -1
+    label.new(bar_index, high,
+         "SHORT\nEntry: $" + str.tostring(close, "#.##") +
+         "\nATR Stop: $" + str.tostring(initial_stop, "#.##") +
+         "\nVol: " + str.tostring(vol_ratio, "#.#") + "x",
+         color=color.new(color.red, 20), textcolor=color.white, style=label.style_label_down)
+
+// === PLOTTING ===
+// EMAs
+plot(ema_fast_4h, "EMA 8 (4H)", color.blue, 2)
+plot(ema_slow_4h, "EMA 21 (4H)", color.orange, 2)
+
+// Trend background
+bgcolor(is_uptrend ? color.new(color.green, 90) : is_downtrend ? color.new(color.red, 90) : na)
+
+// OBV divergence warning (price trending but OBV disagrees)
+obv_divergence = (is_uptrend and obv_bearish) or (is_downtrend and obv_bullish)
+bgcolor(obv_divergence ? color.new(color.orange, 85) : na, title="OBV Divergence")
+
+// Volume expansion markers
+plotshape(vol_expansion and is_uptrend and not long_signal, "Vol Expansion Up", shape.diamond, location.belowbar, color.new(color.green, 50), size=size.tiny)
+plotshape(vol_expansion and is_downtrend and not short_signal, "Vol Expansion Down", shape.diamond, location.abovebar, color.new(color.red, 50), size=size.tiny)
+
+// Volume climax warning
+plotshape(vol_climax, "Volume Climax", shape.xcross, location.abovebar, color.yellow, size=size.normal)
+
+// Entry signals
+plotshape(long_signal, "Long Signal", shape.triangleup, location.belowbar, color.green, size=size.normal)
+plotshape(short_signal, "Short Signal", shape.triangledown, location.abovebar, color.red, size=size.normal)
+
+// ATR trailing stop bands (only when in position)
+plot(active_direction == 1 ? active_hwm - atr_trail_distance : na, "Long Trail Stop", color.green, 1, plot.style_stepline)
+plot(active_direction == -1 ? active_lwm + atr_trail_distance : na, "Short Trail Stop", color.red, 1, plot.style_stepline)
+
+// === INFO TABLE ===
+var table info = table.new(position.top_right, 2, 9, bgcolor=color.new(color.black, 80))
+if barstate.islast
+    table.cell(info, 0, 0, "Trend", text_color=color.white)
+    table.cell(info, 1, 0, is_uptrend ? "UP" : is_downtrend ? "DOWN" : "NONE", text_color=is_uptrend ? color.green : is_downtrend ? color.red : color.gray)
+    table.cell(info, 0, 1, "Strength", text_color=color.white)
+    table.cell(info, 1, 1, str.tostring(trend_diff, "#.##") + "%", text_color=color.white)
+    table.cell(info, 0, 2, "Vol Ratio", text_color=color.white)
+    table.cell(info, 1, 2, str.tostring(vol_ratio, "#.#") + "x", text_color=vol_expansion ? color.green : color.gray)
+    table.cell(info, 0, 3, "OBV", text_color=color.white)
+    table.cell(info, 1, 3, obv_bullish ? "BULL" : "BEAR", text_color=obv_bullish ? color.green : color.red)
+    table.cell(info, 0, 4, "RSI(14)", text_color=color.white)
+    table.cell(info, 1, 4, str.tostring(rsi, "#.#"), text_color=color.white)
+    table.cell(info, 0, 5, "ATR", text_color=color.white)
+    table.cell(info, 1, 5, str.tostring(atr_4h, "#.##"), text_color=color.white)
+    table.cell(info, 0, 6, "Cooldown", text_color=color.white)
+    cooldown_remaining = math.max(0, cooldown_bars - bars_since_signal)
+    table.cell(info, 1, 6, cooldown_remaining > 0 ? str.tostring(cooldown_remaining) + " bars" : "READY", text_color=cooldown_remaining > 0 ? color.yellow : color.green)
+    table.cell(info, 0, 7, "Wins", text_color=color.white)
+    table.cell(info, 1, 7, str.tostring(total_wins), text_color=color.green)
+    table.cell(info, 0, 8, "Losses", text_color=color.white)
+    table.cell(info, 1, 8, str.tostring(total_losses), text_color=color.red)
+
+// === ALERTS ===
+alertcondition(long_signal, "V13 Long", "V13 LONG: Volume expansion + uptrend + OBV bullish")
+alertcondition(short_signal, "V13 Short", "V13 SHORT: Volume expansion + downtrend + OBV bearish")
+alertcondition(vol_climax, "Volume Climax", "V13: Volume climax - potential reversal")
+alertcondition(obv_divergence, "OBV Divergence", "V13: OBV diverging from price trend")

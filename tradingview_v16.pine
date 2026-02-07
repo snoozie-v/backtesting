@@ -1,0 +1,558 @@
+//@version=5
+indicator("V16 - Trend Exhaustion Catcher (Counter-Trend to V15)", overlay=true, max_lines_count=500, max_labels_count=500)
+
+// ============================================================================
+// STRATEGY NOTES
+// ============================================================================
+// V16 is the counter-trend complement to V15.
+// V15 exits when 4H EMAs enter deadzone -> V16 enters when EMAs are approaching it.
+// V15 requires trend alignment -> V16 requires trend weakening.
+//
+// Entry Type A (Convergence): 4H trend + EMAs narrowing >= N bars + gap <= X% + 1H counter-cross
+// Entry Type B (Divergence): 4H trend/flat + RSI divergence on 4H + rejection candle on 1H
+// Exits: TP (2.5x ATR), SL (2.0x ATR), Breakeven at +1R, Trailing at +2R,
+//         Trend re-strengthening (gap widens 10%+), Time exit (36 bars)
+
+// ============================================================================
+// INPUTS
+// ============================================================================
+
+// 4H Trend
+ema_fast_4h_len   = input.int(9,   "4H EMA Fast")
+ema_slow_4h_len   = input.int(21,  "4H EMA Slow")
+deadzone_pct      = input.float(0.1, "Trend Deadzone %", step=0.05)
+
+// 1H Entry
+ema_fast_1h_len   = input.int(9,   "1H EMA Fast")
+ema_slow_1h_len   = input.int(21,  "1H EMA Slow")
+
+// Convergence (Type A)
+min_conv_bars     = input.int(3,    "Min Convergence Bars", minval=1)
+max_gap_pct       = input.float(0.8, "Max Gap % for Entry", step=0.1)
+
+// RSI Divergence (Type B)
+rsi_period_4h     = input.int(14,   "4H RSI Period")
+div_lookback      = input.int(5,    "Divergence Lookback Bars")
+wick_ratio        = input.float(0.6, "Rejection Wick Ratio", step=0.05, minval=0.3, maxval=0.9)
+
+// Volume
+vol_sma_len       = input.int(20, "Volume SMA Length")
+vol_spike_mult    = input.float(1.0, "Volume Spike Multiplier", step=0.1)
+
+// ATR & Risk-Reward
+atr_len           = input.int(14, "ATR Length")
+stop_mult         = input.float(2.0, "Stop Loss Multiplier", step=0.25)
+tp_mult           = input.float(2.5, "Take Profit Multiplier", step=0.25)
+
+// R Levels for Breakeven/Trailing
+tp_mult_1r        = input.float(1.0, "1R Multiplier (Breakeven Trigger)", step=0.25)
+tp_mult_2r        = input.float(2.0, "2R Multiplier (Trailing Trigger)", step=0.25)
+
+// Signal Offset (delay entry by N bars after conditions met)
+signal_offset     = input.int(2, "Signal Offset (bars delay)", minval=0, maxval=10, tooltip="Delay entry by N bars after raw conditions fire. 0 = no delay (original). 2 = wait 2 bars for confirmation.")
+
+// Exits & Cooldown
+trend_str_exit_pct = input.float(10.0, "Trend Strengthen Exit %", step=2.5)
+max_hold_bars     = input.int(36,   "Max Hold Bars (1H)")
+cooldown_bars     = input.int(6,    "Cooldown Bars (1H)")
+
+// Stop Management
+use_breakeven     = input.bool(true, "Enable Breakeven at +1R")
+use_trailing      = input.bool(true, "Enable Trailing at +2R")
+
+// Display
+show_tp_sl_lines  = input.bool(true, "Show TP/SL Lines")
+show_trade_labels = input.bool(true, "Show Trade Plan Labels")
+show_dynamic_sl   = input.bool(true, "Show Dynamic SL Line")
+show_partial_labels = input.bool(true, "Show R-Level Labels")
+show_conv_zone    = input.bool(true, "Show Convergence Zone Background")
+
+// Account & Risk
+account_equity    = input.float(10000, "Account Equity ($)", step=1000)
+daily_loss_limit  = input.int(3, "Daily Loss Limit", minval=1)
+
+// ============================================================================
+// 4H TREND (Pre-Session: Classify UPTREND/DOWNTREND/FLAT)
+// ============================================================================
+
+ema9_4h  = request.security(syminfo.tickerid, "240", ta.ema(close, ema_fast_4h_len))
+ema21_4h = request.security(syminfo.tickerid, "240", ta.ema(close, ema_slow_4h_len))
+
+deadzone    = ema21_4h * (deadzone_pct / 100)
+uptrend_4h  = ema9_4h > (ema21_4h + deadzone)
+downtrend_4h = ema9_4h < (ema21_4h - deadzone)
+flat_4h     = not uptrend_4h and not downtrend_4h
+
+plot(ema9_4h,  color=color.blue,    title="4H EMA Fast", linewidth=2)
+plot(ema21_4h, color=color.orange,  title="4H EMA Slow", linewidth=2)
+
+// ============================================================================
+// 4H EMA GAP & CONVERGENCE STREAK
+// ============================================================================
+
+// Compute gap and convergence streak on 4H via request.security
+f_conv_streak() =>
+    fast = ta.ema(close, ema_fast_4h_len)
+    slow = ta.ema(close, ema_slow_4h_len)
+    gap = math.abs(fast - slow)
+    gap_pct = slow > 0 ? gap / slow * 100 : 0.0
+    var int streak = 0
+    var float prev_gap = 0.0
+    if gap < prev_gap
+        streak += 1
+    else
+        streak := 0
+    prev_gap := gap
+    [gap_pct, streak]
+
+[conv_gap_pct_4h, conv_streak_4h] = request.security(syminfo.tickerid, "240", f_conv_streak())
+
+// ============================================================================
+// 4H RSI & DIVERGENCE DETECTION
+// ============================================================================
+
+f_rsi_div() =>
+    rsi_val = ta.rsi(close, rsi_period_4h)
+    // Bullish: price lower low, RSI higher low
+    bull_div = low < low[div_lookback] and rsi_val > rsi_val[div_lookback]
+    // Bearish: price higher high, RSI lower high
+    bear_div = high > high[div_lookback] and rsi_val < rsi_val[div_lookback]
+    [rsi_val, bull_div, bear_div]
+
+[rsi_4h, bull_div_4h, bear_div_4h] = request.security(syminfo.tickerid, "240", f_rsi_div())
+
+// ============================================================================
+// 1H EMAs & CROSSOVER
+// ============================================================================
+
+ema9_1h  = ta.ema(close, ema_fast_1h_len)
+ema21_1h = ta.ema(close, ema_slow_1h_len)
+
+plot(ema9_1h,  color=color.new(color.blue, 50),    title="1H EMA Fast")
+plot(ema21_1h, color=color.new(color.orange, 50),  title="1H EMA Slow")
+
+long_crossover  = ta.crossover(ema9_1h, ema21_1h)
+short_crossover = ta.crossunder(ema9_1h, ema21_1h)
+
+// ============================================================================
+// 1H REJECTION CANDLE DETECTION
+// ============================================================================
+
+bar_range = high - low
+lower_wick = math.min(open, close) - low
+upper_wick = high - math.max(open, close)
+
+bull_rejection = bar_range > 0 ? (lower_wick / bar_range) >= wick_ratio : false
+bear_rejection = bar_range > 0 ? (upper_wick / bar_range) >= wick_ratio : false
+
+// ============================================================================
+// VOLUME + ATR
+// ============================================================================
+
+vol_sma     = ta.sma(volume, vol_sma_len)
+high_volume = volume >= vol_sma * vol_spike_mult
+vol_ratio   = vol_sma > 0 ? volume / vol_sma : 0.0
+
+atr = ta.atr(atr_len)
+
+// ============================================================================
+// COOLDOWN
+// ============================================================================
+
+var int bars_since_signal = 999
+bars_since_signal := bars_since_signal + 1
+
+// ============================================================================
+// ENTRY CONDITIONS
+// ============================================================================
+
+vol_ok      = high_volume
+cooldown_ok = bars_since_signal >= cooldown_bars
+
+// Type A: Convergence + Counter-Cross (raw conditions)
+conv_ok = conv_streak_4h >= min_conv_bars and conv_gap_pct_4h <= max_gap_pct
+
+long_conv_raw  = conv_ok and long_crossover  and downtrend_4h and vol_ok and cooldown_ok
+short_conv_raw = conv_ok and short_crossover and uptrend_4h   and vol_ok and cooldown_ok
+
+// Type B: RSI Divergence + Rejection Candle (raw conditions)
+long_div_raw  = bull_div_4h and bull_rejection and (downtrend_4h or flat_4h) and vol_ok and cooldown_ok
+short_div_raw = bear_div_4h and bear_rejection and (uptrend_4h or flat_4h)   and vol_ok and cooldown_ok
+
+// Combined raw (convergence priority)
+long_raw  = long_conv_raw  or (long_div_raw  and not long_conv_raw)
+short_raw = short_conv_raw or (short_div_raw and not short_conv_raw)
+
+// Apply signal offset: fire N bars after raw conditions
+// offset=0 means fire immediately (original behavior)
+long_conv_signal  = signal_offset == 0 ? long_conv_raw  : (long_conv_raw[signal_offset]  and not long_conv_raw[signal_offset + 1])
+short_conv_signal = signal_offset == 0 ? short_conv_raw : (short_conv_raw[signal_offset] and not short_conv_raw[signal_offset + 1])
+long_div_signal   = signal_offset == 0 ? long_div_raw   : (long_div_raw[signal_offset]   and not long_div_raw[signal_offset + 1])
+short_div_signal  = signal_offset == 0 ? short_div_raw  : (short_div_raw[signal_offset]  and not short_div_raw[signal_offset + 1])
+
+long_signal  = long_conv_signal  or (long_div_signal  and not long_conv_signal)
+short_signal = short_conv_signal or (short_div_signal and not short_conv_signal)
+
+// Re-check cooldown for the delayed signal bar
+long_signal  := long_signal  and cooldown_ok
+short_signal := short_signal and cooldown_ok
+
+var string entry_type = ""
+if long_conv_signal or short_conv_signal
+    entry_type := "CONV"
+else if long_div_signal or short_div_signal
+    entry_type := "DIV"
+
+if long_signal or short_signal
+    bars_since_signal := 0
+
+// ============================================================================
+// RISK -> REWARD LEVELS
+// ============================================================================
+
+// Long
+long_sl    = close - (atr * stop_mult)
+long_tp1r  = close + (atr * stop_mult * tp_mult_1r)
+long_tp2r  = close + (atr * stop_mult * tp_mult_2r)
+long_tp    = close + (atr * tp_mult)
+
+// Short
+short_sl   = close + (atr * stop_mult)
+short_tp1r = close - (atr * stop_mult * tp_mult_1r)
+short_tp2r = close - (atr * stop_mult * tp_mult_2r)
+short_tp   = close - (atr * tp_mult)
+
+// ============================================================================
+// TRADE TRACKING
+// ============================================================================
+
+var float active_entry = na
+var float active_sl    = na
+var float active_tp    = na
+var float active_tp1r  = na
+var float active_tp2r  = na
+var int   active_direction = 0
+var int   active_bar   = 0
+var int   bars_in_trade = 0
+var float entry_gap_pct = na
+
+// Dynamic SL state: 0=initial, 1=breakeven, 2=trailing
+var int sl_state = 0
+
+// R-level hit tracking
+var bool hit_1r = false
+var bool hit_2r = false
+var float active_risk_dist = na
+
+// Daily loss tracking
+var int losses_today = 0
+var int current_day = 0
+
+if active_direction != 0
+    bars_in_trade := bars_in_trade + 1
+
+// Daily loss reset
+if dayofweek != current_day
+    current_day := dayofweek
+    losses_today := 0
+
+// Trend Re-Strengthening Exit
+trend_str_exit_long  = false
+trend_str_exit_short = false
+if active_direction == 1 and not na(entry_gap_pct) and entry_gap_pct > 0
+    gap_change = ((conv_gap_pct_4h - entry_gap_pct) / entry_gap_pct) * 100
+    trend_str_exit_long := gap_change >= trend_str_exit_pct and downtrend_4h
+
+if active_direction == -1 and not na(entry_gap_pct) and entry_gap_pct > 0
+    gap_change_s = ((conv_gap_pct_4h - entry_gap_pct) / entry_gap_pct) * 100
+    trend_str_exit_short := gap_change_s >= trend_str_exit_pct and uptrend_4h
+
+// Time Exit
+time_exit = active_direction != 0 and bars_in_trade >= max_hold_bars
+
+// ============================================================================
+// STOP MANAGEMENT (Breakeven & Trailing)
+// ============================================================================
+
+if active_direction == 1
+    if use_breakeven and high >= active_tp1r and active_sl < active_entry
+        active_sl := active_entry
+        if sl_state < 1
+            sl_state := 1
+    if use_trailing and high >= active_tp2r and active_sl < active_entry + active_risk_dist
+        active_sl := active_entry + active_risk_dist
+        sl_state := 2
+
+if active_direction == -1
+    if use_breakeven and low <= active_tp1r and active_sl > active_entry
+        active_sl := active_entry
+        if sl_state < 1
+            sl_state := 1
+    if use_trailing and low <= active_tp2r and active_sl > active_entry - active_risk_dist
+        active_sl := active_entry - active_risk_dist
+        sl_state := 2
+
+// ============================================================================
+// R-LEVEL HIT DETECTION
+// ============================================================================
+
+if active_direction == 1
+    if not hit_1r and high >= active_tp1r
+        hit_1r := true
+        if show_partial_labels
+            label.new(bar_index, active_tp1r, "1R", color=color.new(color.teal, 30), textcolor=color.white, style=label.style_label_down, size=size.tiny)
+    if not hit_2r and high >= active_tp2r
+        hit_2r := true
+        if show_partial_labels
+            label.new(bar_index, active_tp2r, "2R", color=color.new(color.teal, 30), textcolor=color.white, style=label.style_label_down, size=size.tiny)
+
+if active_direction == -1
+    if not hit_1r and low <= active_tp1r
+        hit_1r := true
+        if show_partial_labels
+            label.new(bar_index, active_tp1r, "1R", color=color.new(color.teal, 30), textcolor=color.white, style=label.style_label_up, size=size.tiny)
+    if not hit_2r and low <= active_tp2r
+        hit_2r := true
+        if show_partial_labels
+            label.new(bar_index, active_tp2r, "2R", color=color.new(color.teal, 30), textcolor=color.white, style=label.style_label_up, size=size.tiny)
+
+// ============================================================================
+// EXIT LOGIC
+// ============================================================================
+
+// Long Exits
+if active_direction == 1
+    if high >= active_tp
+        active_direction := 0
+        active_entry := na
+        bars_in_trade := 0
+        sl_state := 0
+        hit_1r := false
+        hit_2r := false
+        entry_gap_pct := na
+    else if low <= active_sl
+        if active_sl < active_entry
+            losses_today += 1
+        active_direction := 0
+        active_entry := na
+        bars_in_trade := 0
+        sl_state := 0
+        hit_1r := false
+        hit_2r := false
+        entry_gap_pct := na
+    else if trend_str_exit_long
+        if close <= active_entry
+            losses_today += 1
+        active_direction := 0
+        active_entry := na
+        bars_in_trade := 0
+        sl_state := 0
+        hit_1r := false
+        hit_2r := false
+        entry_gap_pct := na
+    else if time_exit
+        if close <= active_entry
+            losses_today += 1
+        active_direction := 0
+        active_entry := na
+        bars_in_trade := 0
+        sl_state := 0
+        hit_1r := false
+        hit_2r := false
+        entry_gap_pct := na
+
+// Short Exits
+if active_direction == -1
+    if low <= active_tp
+        active_direction := 0
+        active_entry := na
+        bars_in_trade := 0
+        sl_state := 0
+        hit_1r := false
+        hit_2r := false
+        entry_gap_pct := na
+    else if high >= active_sl
+        if active_sl > active_entry
+            losses_today += 1
+        active_direction := 0
+        active_entry := na
+        bars_in_trade := 0
+        sl_state := 0
+        hit_1r := false
+        hit_2r := false
+        entry_gap_pct := na
+    else if trend_str_exit_short
+        if close >= active_entry
+            losses_today += 1
+        active_direction := 0
+        active_entry := na
+        bars_in_trade := 0
+        sl_state := 0
+        hit_1r := false
+        hit_2r := false
+        entry_gap_pct := na
+    else if time_exit
+        if close >= active_entry
+            losses_today += 1
+        active_direction := 0
+        active_entry := na
+        bars_in_trade := 0
+        sl_state := 0
+        hit_1r := false
+        hit_2r := false
+        entry_gap_pct := na
+
+// ============================================================================
+// NEW ENTRIES
+// ============================================================================
+
+if long_signal and active_direction == 0
+    active_entry  := close
+    active_sl     := long_sl
+    active_tp     := long_tp
+    active_tp1r   := long_tp1r
+    active_tp2r   := long_tp2r
+    active_risk_dist := atr * stop_mult
+    active_direction := 1
+    active_bar    := bar_index
+    bars_in_trade := 0
+    sl_state := 0
+    hit_1r := false
+    hit_2r := false
+    entry_gap_pct := long_conv_signal ? conv_gap_pct_4h : na
+
+    if show_tp_sl_lines
+        line.new(bar_index, long_sl, bar_index + 20, long_sl, color=color.new(color.red, 50), width=1, style=line.style_dotted)
+        line.new(bar_index, long_tp, bar_index + 20, long_tp, color=color.new(color.green, 50), width=1, style=line.style_dotted)
+
+    if show_trade_labels
+        long_label_text = "LONG " + entry_type + "\n" +
+             "Entry: $" + str.tostring(close, "#.####") + "\n" +
+             "SL:    $" + str.tostring(long_sl, "#.####") + "\n" +
+             "1R:    $" + str.tostring(long_tp1r, "#.####") + " (BE)" + "\n" +
+             "2R:    $" + str.tostring(long_tp2r, "#.####") + " (Trail)" + "\n" +
+             "TP:    $" + str.tostring(long_tp, "#.####") + "\n" +
+             "RR:    " + str.tostring(tp_mult / stop_mult, "#.##") + ":1\n" +
+             "Vol:   " + str.tostring(vol_ratio, "#.#") + "x\n" +
+             "Gap:   " + str.tostring(conv_gap_pct_4h, "#.##") + "%"
+        label.new(bar_index, close, long_label_text, color=color.new(color.green, 15), textcolor=color.white, style=label.style_label_up, size=size.normal)
+
+if short_signal and active_direction == 0
+    active_entry  := close
+    active_sl     := short_sl
+    active_tp     := short_tp
+    active_tp1r   := short_tp1r
+    active_tp2r   := short_tp2r
+    active_risk_dist := atr * stop_mult
+    active_direction := -1
+    active_bar    := bar_index
+    bars_in_trade := 0
+    sl_state := 0
+    hit_1r := false
+    hit_2r := false
+    entry_gap_pct := short_conv_signal ? conv_gap_pct_4h : na
+
+    if show_tp_sl_lines
+        line.new(bar_index, short_sl, bar_index + 20, short_sl, color=color.new(color.red, 50), width=1, style=line.style_dotted)
+        line.new(bar_index, short_tp, bar_index + 20, short_tp, color=color.new(color.green, 50), width=1, style=line.style_dotted)
+
+    if show_trade_labels
+        short_label_text = "SHORT " + entry_type + "\n" +
+             "Entry: $" + str.tostring(close, "#.####") + "\n" +
+             "SL:    $" + str.tostring(short_sl, "#.####") + "\n" +
+             "1R:    $" + str.tostring(short_tp1r, "#.####") + " (BE)" + "\n" +
+             "2R:    $" + str.tostring(short_tp2r, "#.####") + " (Trail)" + "\n" +
+             "TP:    $" + str.tostring(short_tp, "#.####") + "\n" +
+             "RR:    " + str.tostring(tp_mult / stop_mult, "#.##") + ":1\n" +
+             "Vol:   " + str.tostring(vol_ratio, "#.#") + "x\n" +
+             "Gap:   " + str.tostring(conv_gap_pct_4h, "#.##") + "%"
+        label.new(bar_index, close, short_label_text, color=color.new(color.red, 15), textcolor=color.white, style=label.style_label_down, size=size.normal)
+
+// ============================================================================
+// PLOT SIGNALS (Convergence: Diamonds; Divergence: Crosses)
+// ============================================================================
+
+plotshape(long_conv_signal, title="Long Convergence", location=location.belowbar, color=color.teal, style=shape.diamond, size=size.small)
+plotshape(short_conv_signal, title="Short Convergence", location=location.abovebar, color=color.teal, style=shape.diamond, size=size.small)
+
+plotshape(long_div_signal and not long_conv_signal, title="Long Divergence", location=location.belowbar, color=color.aqua, style=shape.cross, size=size.small)
+plotshape(short_div_signal and not short_conv_signal, title="Short Divergence", location=location.abovebar, color=color.aqua, style=shape.cross, size=size.small)
+
+// Trend Background
+bgcolor(uptrend_4h ? color.new(color.green, 92) : downtrend_4h ? color.new(color.red, 92) : color.new(color.gray, 95), title="Trend Background")
+
+// Convergence Zone Highlight (yellow when EMAs narrowing enough for entry)
+conv_zone = conv_ok and (uptrend_4h or downtrend_4h)
+bgcolor(show_conv_zone and conv_zone ? color.new(color.yellow, 88) : na, title="Convergence Zone")
+
+// Dynamic SL Line
+dynamic_sl_val = show_dynamic_sl and active_direction != 0 ? active_sl : na
+dynamic_sl_color = sl_state == 2 ? color.green : sl_state == 1 ? color.yellow : color.red
+plot(dynamic_sl_val, title="Dynamic SL", color=dynamic_sl_color, style=plot.style_stepline, linewidth=2)
+
+// ============================================================================
+// DASHBOARD (9 rows)
+// ============================================================================
+
+// Position sizing calc
+risk_dollars = account_equity * 0.01
+sl_dist = atr * stop_mult
+position_units = sl_dist > 0 ? risk_dollars / sl_dist : 0.0
+
+var table info = table.new(position.top_right, 2, 9, bgcolor=color.new(color.black, 80))
+if barstate.islast
+    // Row 0: 4H Trend
+    table.cell(info, 0, 0, "4H Trend", text_color=color.white)
+    table.cell(info, 1, 0, uptrend_4h ? "UPTREND" : downtrend_4h ? "DOWNTREND" : "FLAT (DZ)", text_color=uptrend_4h ? color.green : downtrend_4h ? color.red : color.yellow)
+
+    // Row 1: Convergence (streak + gap%)
+    table.cell(info, 0, 1, "Convergence", text_color=color.white)
+    conv_color = conv_ok ? color.lime : color.gray
+    table.cell(info, 1, 1, "Streak: " + str.tostring(conv_streak_4h) + " | Gap: " + str.tostring(conv_gap_pct_4h, "#.##") + "%", text_color=conv_color)
+
+    // Row 2: 4H RSI
+    table.cell(info, 0, 2, "4H RSI", text_color=color.white)
+    rsi_color = rsi_4h > 70 ? color.red : rsi_4h < 30 ? color.green : color.white
+    table.cell(info, 1, 2, str.tostring(rsi_4h, "#.#"), text_color=rsi_color)
+
+    // Row 3: Divergence
+    table.cell(info, 0, 3, "Divergence", text_color=color.white)
+    div_text = bull_div_4h ? "BULLISH" : bear_div_4h ? "BEARISH" : "NONE"
+    div_color = bull_div_4h ? color.green : bear_div_4h ? color.red : color.gray
+    table.cell(info, 1, 3, div_text, text_color=div_color)
+
+    // Row 4: Position
+    table.cell(info, 0, 4, "Position", text_color=color.white)
+    pos_text = active_direction == 1 ? "LONG" : active_direction == -1 ? "SHORT" : "FLAT"
+    if active_direction != 0
+        pos_text := pos_text + " " + str.tostring(bars_in_trade) + "/" + str.tostring(max_hold_bars)
+    table.cell(info, 1, 4, pos_text, text_color=active_direction == 1 ? color.green : active_direction == -1 ? color.red : color.gray)
+
+    // Row 5: Cooldown
+    table.cell(info, 0, 5, "Cooldown", text_color=color.white)
+    cooldown_remaining = math.max(0, cooldown_bars - bars_since_signal)
+    table.cell(info, 1, 5, cooldown_remaining > 0 ? str.tostring(cooldown_remaining) + " bars" : "READY", text_color=cooldown_remaining > 0 ? color.yellow : color.green)
+
+    // Row 6: SL / TP Dist
+    table.cell(info, 0, 6, "SL / TP Dist", text_color=color.white)
+    table.cell(info, 1, 6, "$" + str.tostring(atr * stop_mult, "#.##") + " / $" + str.tostring(atr * tp_mult, "#.##"), text_color=color.white)
+
+    // Row 7: Vol
+    table.cell(info, 0, 7, "Vol", text_color=color.white)
+    table.cell(info, 1, 7, str.tostring(vol_ratio, "#.#") + "x", text_color=high_volume ? color.green : color.gray)
+
+    // Row 8: Sizing + Day Losses
+    table.cell(info, 0, 8, "Size / Losses", text_color=color.white)
+    daily_color = losses_today >= daily_loss_limit ? color.red : color.green
+    table.cell(info, 1, 8, str.tostring(position_units, "#.#") + " units | " + str.tostring(losses_today) + "/" + str.tostring(daily_loss_limit), text_color=daily_color)
+
+// ============================================================================
+// ALERTS
+// ============================================================================
+
+alertcondition(long_conv_signal, "V16 Long Convergence", "V16: Long convergence entry - 4H downtrend exhausting + 1H bullish cross")
+alertcondition(short_conv_signal, "V16 Short Convergence", "V16: Short convergence entry - 4H uptrend exhausting + 1H bearish cross")
+alertcondition(long_div_signal and not long_conv_signal, "V16 Long Divergence", "V16: Long divergence entry - Bullish RSI div + rejection candle")
+alertcondition(short_div_signal and not short_conv_signal, "V16 Short Divergence", "V16: Short divergence entry - Bearish RSI div + rejection candle")
+alertcondition(trend_str_exit_long or trend_str_exit_short, "V16 Trend Re-Strengthen", "V16: Trend re-strengthening - consider exit")
+alertcondition(time_exit, "V16 Time Exit", "V16: Max hold time reached - close position")

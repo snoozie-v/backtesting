@@ -234,6 +234,32 @@ V10_SOL_PARAMS = {
     "trend_lookback": 2,
 }
 
+# V11 - Combined Range + Trend Strategy (4H Based)
+# Reduced trade frequency to minimize commission drag
+V11_PARAMS = {
+    # Trend detection (4H candles)
+    "trend_lookback": 6,           # 4H candles to check for trend
+    "min_trend_candles": 4,        # Minimum consecutive HH/HL or LH/LL for trend
+
+    # Range Strategy parameters
+    "range_approach_pct": 0.5,     # Entry threshold for range
+    "range_min_range_pct": 5.0,    # Minimum 4H range (increased to filter noise)
+    "range_buffer_pct": 3.0,       # Target buffer (reduced to let winners run)
+    "range_rr_ratio": 3.0,         # R:R ratio (increased for better expectancy)
+    "range_cooldown_bars": 96,     # 24 hours = 96 x 15m bars
+
+    # Trend Strategy parameters
+    "trend_approach_pct": 0.3,     # Entry threshold for trend (tighter)
+    "trend_min_range_pct": 4.0,    # Minimum 4H range
+    "trend_buffer_pct": 3.0,       # Target buffer
+    "trend_rr_ratio": 3.5,         # R:R ratio
+    "trend_cooldown_bars": 192,    # 48 hours = 192 x 15m bars
+
+    # Risk-based position sizing
+    "risk_per_trade_pct": 2.0,     # Risk 2% of equity per trade
+    "max_position_pct": 30.0,      # Max 30% of equity in single position
+}
+
 
 # V6 - Multi-TF with bracket orders
 V6_PARAMS = {
@@ -274,8 +300,268 @@ V3_PARAMS = {
 # STRATEGY REGISTRY
 # ============================================================================
 
+# V12 - High Win Rate Trend Scalper
+# Optimized for WIN RATE, not total return
+V12_PARAMS = {
+    # Trend detection (4H)
+    "ema_fast": 8,
+    "ema_slow": 21,
+    "trend_strength": 0.5,
+
+    # Entry conditions (15m)
+    "rsi_period": 14,
+    "rsi_oversold": 40,
+    "rsi_overbought": 60,
+    "pullback_pct": 1.0,
+
+    # Take profit / Stop loss (tight TP, wide SL for high win rate)
+    "tp_pct": 1.0,
+    "sl_pct": 3.0,
+
+    # Position sizing
+    "risk_pct": 2.0,
+    "position_pct": 95.0,
+
+    # Cooldown
+    "cooldown_bars": 4,
+}
+
+# V14 - 4H EMA Trend with 15M Crossover Entries
+# Simple: 4H trend alignment + 15M EMA crossover + volume + ATR TP/SL
+V14_PARAMS = {
+    # 4H Trend EMAs
+    "ema_fast": 9,
+    "ema_slow": 25,
+
+    # 15M Entry EMAs
+    "entry_ema_fast": 9,
+    "entry_ema_slow": 25,
+
+    # Volume confirmation
+    "vol_sma_period": 20,
+    "require_volume": True,
+
+    # ATR-based stops (2:1 R:R)
+    "atr_period": 14,
+    "stop_multiplier": 1.5,
+    "tp_multiplier": 3.0,
+
+    # Trend reversal exit
+    "exit_on_trend_reversal": True,
+
+    # Position sizing
+    "position_pct": 95.0,
+
+    # Cooldown
+    "cooldown_bars": 4,
+}
+
+# V15 - Zone Trader (1-2 Trades/Day for 20-Trade Exercise)
+# 4H trend filter + 1H EMA crossover/pullback entries + risk-based sizing
+V15_PARAMS = {
+    # 4H Trend EMAs
+    "ema_fast_4h_period": 9,
+    "ema_slow_4h_period": 21,
+    "trend_deadzone_pct": 0.1,
+
+    # 1H Entry EMAs
+    "ema_fast_1h_period": 9,
+    "ema_slow_1h_period": 21,
+
+    # Entry type toggles
+    "enable_crossover_entry": True,
+    "enable_pullback_entry": True,
+
+    # Volume confirmation
+    "vol_sma_period": 20,
+    "require_volume": True,
+
+    # ATR-based stops (2:1 R:R)
+    "atr_period": 14,
+    "stop_multiplier": 1.5,
+    "tp_multiplier": 3.0,
+
+    # Exit controls
+    "exit_on_trend_reversal": True,
+    "max_hold_bars": 48,
+
+    # Risk-based position sizing (100X leverage)
+    "risk_per_trade_pct": 1.0,
+
+    # Cooldown (1H bars)
+    "cooldown_bars": 6,
+}
+
+# V16 - Trend Exhaustion Catcher (Counter-Trend Complement to V15)
+# Enters when 4H trend is losing momentum (convergence) or showing RSI divergence
+V16_PARAMS = {
+    # 4H Trend EMAs
+    "ema_fast_4h_period": 9,
+    "ema_slow_4h_period": 21,
+    "trend_deadzone_pct": 0.1,
+
+    # 1H Entry EMAs
+    "ema_fast_1h_period": 9,
+    "ema_slow_1h_period": 21,
+
+    # Convergence entry (Type A)
+    "min_convergence_bars": 3,
+    "max_gap_pct": 0.8,
+
+    # RSI divergence entry (Type B)
+    "rsi_period_4h": 14,
+    "divergence_lookback": 5,
+    "rejection_wick_ratio": 0.6,
+
+    # Volume confirmation
+    "vol_sma_period": 20,
+    "vol_spike_mult": 1.0,
+
+    # ATR-based stops
+    "atr_period": 14,
+    "stop_multiplier": 2.0,
+    "tp_multiplier": 2.5,
+
+    # Exit controls
+    "trend_strengthen_exit_pct": 10.0,
+    "max_hold_bars": 36,
+
+    # Risk-based position sizing (100X leverage)
+    "risk_per_trade_pct": 1.0,
+
+    # Cooldown (1H bars)
+    "cooldown_bars": 6,
+}
+
+# V15 SOL-optimized params (Trial #85 - 25.8% return, 61.8% win rate, 34 trades)
+V15_SOL_PARAMS = {
+    "ema_fast_4h_period": 13,
+    "ema_slow_4h_period": 27,
+    "trend_deadzone_pct": 0.05,
+    "ema_fast_1h_period": 13,
+    "ema_slow_1h_period": 29,
+    "enable_crossover_entry": True,
+    "enable_pullback_entry": False,
+    "vol_sma_period": 30,
+    "require_volume": True,
+    "atr_period": 17,
+    "stop_multiplier": 2.5,
+    "tp_multiplier": 3.5,
+    "exit_on_trend_reversal": False,
+    "max_hold_bars": 48,
+    "risk_per_trade_pct": 3.0,
+    "cooldown_bars": 9,
+}
+
+# V15 BTC-optimized params (Trial #95 - 8.9% return, 42.4% win rate, 59 trades, 0.24 T/day)
+V15_BTC_PARAMS = {
+    "ema_fast_4h_period": 10,
+    "ema_slow_4h_period": 25,
+    "trend_deadzone_pct": 0.25,
+    "ema_fast_1h_period": 7,
+    "ema_slow_1h_period": 23,
+    "enable_crossover_entry": True,
+    "enable_pullback_entry": False,
+    "vol_sma_period": 20,
+    "require_volume": False,
+    "atr_period": 20,
+    "stop_multiplier": 1.75,
+    "tp_multiplier": 4.5,
+    "exit_on_trend_reversal": True,
+    "max_hold_bars": 72,
+    "risk_per_trade_pct": 3.0,
+    "cooldown_bars": 11,
+}
+
+# V15 ETH-optimized params (Trial #81 - 132.6% return, 52.5% win rate, 139 trades, 0.56 T/day)
+V15_ETH_PARAMS = {
+    "ema_fast_4h_period": 9,
+    "ema_slow_4h_period": 21,
+    "trend_deadzone_pct": 0.45,
+    "ema_fast_1h_period": 10,
+    "ema_slow_1h_period": 22,
+    "enable_crossover_entry": True,
+    "enable_pullback_entry": True,
+    "vol_sma_period": 15,
+    "require_volume": True,
+    "atr_period": 18,
+    "stop_multiplier": 1.75,
+    "tp_multiplier": 3.0,
+    "exit_on_trend_reversal": False,
+    "max_hold_bars": 36,
+    "risk_per_trade_pct": 3.0,
+    "cooldown_bars": 3,
+}
+
+# V13 - Trend Momentum Rider
+# Designed to capture BIGGER moves with volume confirmation and ATR trailing stops
+V13_PARAMS = {
+    # Trend detection (4H)
+    "ema_fast": 8,
+    "ema_slow": 21,
+    "trend_strength_min": 0.5,
+
+    # Volume entry confirmation
+    "vol_sma_period": 20,
+    "vol_expansion_mult": 1.3,
+    "require_volume_confirm": True,
+
+    # OBV confirmation (disabled - was blocking entries)
+    "use_obv_filter": False,
+    "obv_ema_period": 10,
+
+    # RSI (very lenient - just avoid extremes)
+    "rsi_period": 14,
+    "rsi_oversold": 30,
+    "rsi_overbought": 70,
+
+    # Pullback (disabled by default)
+    "use_pullback_filter": False,
+    "pullback_pct": 0.5,
+
+    # ATR-based stops
+    "atr_period": 14,
+    "atr_trailing_mult": 2.5,
+    "atr_initial_mult": 1.5,
+
+    # Fallback fixed stops
+    "trailing_pct": 4.0,
+    "initial_stop_pct": 3.0,
+
+    # Take profit (disabled - use trailing)
+    "use_fixed_tp": False,
+    "fixed_tp_pct": 8.0,
+
+    # Partial profits
+    "use_partial_profits": True,
+    "partial_target_atr_mult": 3.0,
+    "partial_sell_ratio": 0.33,
+
+    # Volume exit
+    "use_volume_exit": True,
+    "vol_climax_mult": 2.5,
+    "price_stall_pct": 0.3,
+
+    # Position sizing
+    "risk_pct": 2.0,
+    "position_pct": 90.0,
+
+    # Cooldown
+    "cooldown_bars": 8,
+}
+
 # Map strategy names to their parameter sets
 STRATEGY_PARAMS: Dict[str, Dict[str, Any]] = {
+    "v16": V16_PARAMS,
+    "v15": V15_SOL_PARAMS,  # Default to SOL-optimized
+    "v15_baseline": V15_PARAMS,
+    "v15_sol": V15_SOL_PARAMS,
+    "v15_btc": V15_BTC_PARAMS,
+    "v15_eth": V15_ETH_PARAMS,
+    "v14": V14_PARAMS,
+    "v13": V13_PARAMS,
+    "v12": V12_PARAMS,
+    "v11": V11_PARAMS,
     "v10": V10_SOL_PARAMS,  # Default to optimized
     "v10_baseline": V10_PARAMS,
     "v10_sol": V10_SOL_PARAMS,
@@ -310,8 +596,24 @@ def register_strategies():
     from strategies.sol_strategy_v8_fast import SolStrategyV8Fast
     from strategies.sol_strategy_v9 import SolStrategyV9
     from strategies.sol_strategy_v10 import SolStrategyV10
+    from strategies.sol_strategy_v11 import SolStrategyV11
+    from strategies.sol_strategy_v12 import SolStrategyV12
+    from strategies.sol_strategy_v13 import SolStrategyV13
+    from strategies.sol_strategy_v14 import SolStrategyV14
+    from strategies.sol_strategy_v15 import SolStrategyV15
+    from strategies.sol_strategy_v16 import SolStrategyV16
 
     STRATEGY_CLASSES.update({
+        "v16": SolStrategyV16,
+        "v15": SolStrategyV15,
+        "v15_baseline": SolStrategyV15,
+        "v15_sol": SolStrategyV15,
+        "v15_btc": SolStrategyV15,
+        "v15_eth": SolStrategyV15,
+        "v14": SolStrategyV14,
+        "v13": SolStrategyV13,
+        "v12": SolStrategyV12,
+        "v11": SolStrategyV11,
         "v10": SolStrategyV10,
         "v10_baseline": SolStrategyV10,
         "v10_sol": SolStrategyV10,

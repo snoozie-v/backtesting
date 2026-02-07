@@ -183,7 +183,9 @@ def run_backtest(
         if verbose:
             print(f"Filtering from {start_date}")
     if end_date:
-        df = df[df.index <= end_date]
+        # Add time component so "2024-12-31" includes the full day
+        end_ts = pd.Timestamp(end_date) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+        df = df[df.index <= end_ts]
         if verbose:
             print(f"Filtering to {end_date}")
 
@@ -380,7 +382,7 @@ Examples:
     parser.add_argument(
         "--strategy", "-s",
         default="v8",
-        choices=["v3", "v6", "v7", "v8", "v8_fast", "v8_fast_sol", "v8_fast_vet", "v8_baseline", "v9", "v9_baseline", "v9_universal", "v9_sol", "v9_vet", "v10", "v10_baseline", "v10_sol"],
+        choices=["v3", "v6", "v7", "v8", "v8_fast", "v8_fast_sol", "v8_fast_vet", "v8_baseline", "v9", "v9_baseline", "v9_universal", "v9_sol", "v9_vet", "v10", "v10_baseline", "v10_sol", "v11", "v12", "v13", "v14", "v15", "v15_baseline", "v15_sol", "v15_btc", "v15_eth", "v16"],
         help="Strategy to run (default: v8)"
     )
 
@@ -423,8 +425,8 @@ Examples:
     parser.add_argument(
         "--metric",
         default="final_value",
-        choices=["final_value", "sharpe", "return"],
-        help="Metric to optimize (default: final_value)"
+        choices=["final_value", "sharpe", "return", "win_rate", "expectancy"],
+        help="Metric to optimize (default: final_value, use win_rate for v12, expectancy for v15)"
     )
 
     # Result management
