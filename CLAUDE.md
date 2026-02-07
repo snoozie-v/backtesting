@@ -4,13 +4,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a cryptocurrency backtesting framework for SOL/USD using the backtrader library with multi-timeframe analysis. Strategies have evolved through versions V1-V8, with V8 being the current "rounded-bottom catcher" strategy.
+This is a cryptocurrency backtesting framework for SOL/USD and other assets using the backtrader library with multi-timeframe analysis. Active strategies: V3, V6, V7, V8, V8 Fast, V9, V10.
 
 ## Commands
 
 ```bash
 # Run backtest (main entry point)
-python run_backtest.py
+python backtest.py
+
+# Run optimizer
+python optimizer.py
 
 # Fetch historical 15m data from Binance (recommended - full history)
 python fetch_sol_binance_15m.py
@@ -23,7 +26,7 @@ There is no formal test suite - strategy validation is done manually by running 
 
 ## Dependencies
 
-Key packages (not yet in requirements.txt):
+Key packages:
 - `backtrader` - backtesting framework
 - `pandas` - data handling
 - `yfinance` - price data fetching
@@ -65,7 +68,7 @@ cerebro.run(runonce=False)  # Required for multi-TF stability
 
 ## Strategy Structure
 
-Strategies live in `strategies/` and follow a versioned naming pattern (`sol_strategy_v1.py` through `sol_strategy_v8.py`).
+Strategies live in `strategies/` and follow a versioned naming pattern. Active versions: V3, V6, V7, V8, V8 Fast, V9, V10. All are registered in `config.py`.
 
 Each strategy class:
 - Inherits from `bt.Strategy`
