@@ -1,0 +1,26 @@
+{
+  "params": {
+    "ema_fast_4h": 9,
+    "ema_slow_4h": 30,
+    "trend_threshold": 0.8,
+    "swing_lookback": 4,
+    "stop_mult": 1.25,
+    "tp1_mult": 1.25,
+    "tp2_mult": 2.0,
+    "risk_per_trade_pct": 1.5,
+    "wick_ratio": 0.55,
+    "pullback_zone_mult": 2.0
+  },
+  "metrics": {
+    "optimizer_score": 19028.612039978914,
+    "final_value": 19028.612039978914,
+    "total_return_pct": 90.28612039978914,
+    "total_trades": 1106,
+    "trades_per_day": 0.6020685900925422,
+    "win_rate_pct": 45.298372513562384,
+    "max_drawdown_pct": 27.03133195573211,
+    "sharpe_ratio": 0
+  },
+  "trial_number": 0,
+  "timestamp": "2026-02-07T23:14:03.484629"
+}

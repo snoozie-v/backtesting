@@ -164,65 +164,6 @@ def create_v8_objective(metric: str = "final_value", start_date: str = None, end
     return objective
 
 
-def create_v10_objective(metric: str = "final_value", start_date: str = None, end_date: str = None):
-    """
-    Create objective function for v10 (trend trading with pullbacks) optimization.
-    """
-    def objective(trial: optuna.Trial) -> float:
-        params = {
-            # Trend detection
-            "trend_lookback": trial.suggest_int("trend_lookback", 2, 6),
-
-            # Entry threshold - how close to prev day high/low for pullback
-            "approach_pct": trial.suggest_float("approach_pct", 0.25, 3.0, step=0.25),
-
-            # Target buffer - % short of exact high/low
-            "target_buffer_pct": trial.suggest_float("target_buffer_pct", 0.5, 5.0, step=0.5),
-
-            # Risk/Reward ratio
-            "rr_ratio": trial.suggest_float("rr_ratio", 1.5, 5.0, step=0.5),
-
-            # Minimum range filter - skip small range days
-            "min_range_pct": trial.suggest_float("min_range_pct", 0.5, 5.0, step=0.5),
-
-            # Trade cooldown - prevent overtrading
-            "cooldown_bars": trial.suggest_int("cooldown_bars", 1, 12),
-
-            # Position sizing
-            "position_pct": trial.suggest_float("position_pct", 0.5, 0.98, step=0.04),
-        }
-
-        try:
-            result = run_backtest(
-                strategy_name="v10",
-                params_override=params,
-                save=False,
-                verbose=False,
-                start_date=start_date,
-                end_date=end_date,
-            )
-
-            trial.set_user_attr("total_return_pct", result.total_return_pct)
-            trial.set_user_attr("total_trades", result.total_trades)
-            trial.set_user_attr("win_rate_pct", result.win_rate_pct or 0)
-            trial.set_user_attr("max_drawdown_pct", result.max_drawdown_pct or 0)
-            trial.set_user_attr("sharpe_ratio", result.sharpe_ratio or 0)
-
-            if metric == "final_value":
-                return result.final_value
-            elif metric == "sharpe":
-                return result.sharpe_ratio or -999
-            elif metric == "return":
-                return result.total_return_pct
-            else:
-                return result.final_value
-
-        except Exception as e:
-            print(f"Trial failed: {e}")
-            return 0.0
-
-    return objective
-
 
 def create_v9_objective(metric: str = "final_value", start_date: str = None, end_date: str = None):
     """
@@ -343,70 +284,6 @@ def create_v11_objective(metric: str = "final_value"):
 
     return objective
 
-
-def create_v12_objective(metric: str = "win_rate"):
-    """
-    Create objective function for v12 (high win rate trend scalper).
-    DEFAULT: Optimizes for WIN RATE, not final value.
-    """
-    def objective(trial: optuna.Trial) -> float:
-        params = {
-            # Trend detection (4H)
-            "ema_fast": trial.suggest_int("ema_fast", 5, 12),
-            "ema_slow": trial.suggest_int("ema_slow", 15, 30),
-            "trend_strength": trial.suggest_float("trend_strength", 0.2, 1.5, step=0.1),
-
-            # Entry conditions (15m)
-            "rsi_period": trial.suggest_int("rsi_period", 7, 21),
-            "rsi_oversold": trial.suggest_int("rsi_oversold", 25, 45),
-            "rsi_overbought": trial.suggest_int("rsi_overbought", 55, 75),
-            "pullback_pct": trial.suggest_float("pullback_pct", 0.5, 3.0, step=0.25),
-
-            # Take profit / Stop loss (key for win rate)
-            "tp_pct": trial.suggest_float("tp_pct", 0.5, 2.5, step=0.25),
-            "sl_pct": trial.suggest_float("sl_pct", 2.0, 6.0, step=0.5),
-
-            # Position sizing
-            "position_pct": trial.suggest_float("position_pct", 80.0, 98.0, step=2.0),
-
-            # Cooldown
-            "cooldown_bars": trial.suggest_int("cooldown_bars", 1, 12),
-        }
-
-        try:
-            result = run_backtest(
-                strategy_name="v12",
-                params_override=params,
-                save=False,
-                verbose=False,
-            )
-
-            trial.set_user_attr("total_return_pct", result.total_return_pct)
-            trial.set_user_attr("total_trades", result.total_trades)
-            trial.set_user_attr("win_rate_pct", result.win_rate_pct or 0)
-            trial.set_user_attr("max_drawdown_pct", result.max_drawdown_pct or 0)
-
-            # For V12, default to optimizing WIN RATE
-            if metric == "win_rate":
-                # Require minimum trades to avoid overfitting
-                if result.total_trades < 50:
-                    return 0.0
-                return result.win_rate_pct or 0.0
-            elif metric == "final_value":
-                return result.final_value
-            elif metric == "return":
-                return result.total_return_pct
-            else:
-                # Default to win rate for v12
-                if result.total_trades < 50:
-                    return 0.0
-                return result.win_rate_pct or 0.0
-
-        except Exception as e:
-            print(f"Trial failed: {e}")
-            return 0.0
-
-    return objective
 
 
 def create_v13_objective(metric: str = "final_value", start_date: str = None, end_date: str = None):
@@ -757,6 +634,131 @@ def create_v16_objective(metric: str = "expectancy", start_date: str = None, end
     return objective
 
 
+def create_v17_objective(metric: str = "expectancy", start_date: str = None, end_date: str = None):
+    """
+    Create objective function for v17 (ATR Swing Scalper).
+    DEFAULT: Optimizes for EXPECTANCY - positive return scaled by trade frequency.
+    10 optimizable params, lean search space.
+    """
+    def objective(trial: optuna.Trial) -> float:
+        params = {
+            # 4H Trend EMAs
+            "ema_fast_4h": trial.suggest_int("ema_fast_4h", 5, 15),
+            "ema_slow_4h": trial.suggest_int("ema_slow_4h", 15, 30),
+            "trend_threshold": trial.suggest_float("trend_threshold", 0.2, 1.0, step=0.1),
+
+            # 1H Swing detection
+            "swing_lookback": trial.suggest_int("swing_lookback", 2, 5),
+
+            # Stop/TP multipliers
+            "stop_mult": trial.suggest_float("stop_mult", 1.0, 2.5, step=0.25),
+            "tp1_mult": trial.suggest_float("tp1_mult", 1.0, 2.5, step=0.25),
+            "tp2_mult": trial.suggest_float("tp2_mult", 2.0, 5.0, step=0.5),
+
+            # Risk management
+            "risk_per_trade_pct": trial.suggest_float("risk_per_trade_pct", 0.25, 1.5, step=0.25),
+
+            # Entry tuning
+            "wick_ratio": trial.suggest_float("wick_ratio", 0.3, 0.7, step=0.05),
+            "pullback_zone_mult": trial.suggest_float("pullback_zone_mult", 0.5, 2.5, step=0.25),
+        }
+
+        try:
+            result = run_backtest(
+                strategy_name="v17",
+                params_override=params,
+                save=False,
+                verbose=False,
+                start_date=start_date,
+                end_date=end_date,
+            )
+
+            trial.set_user_attr("final_value", result.final_value)
+            trial.set_user_attr("total_return_pct", result.total_return_pct)
+            trial.set_user_attr("total_trades", result.total_trades)
+            trial.set_user_attr("win_rate_pct", result.win_rate_pct or 0)
+            trial.set_user_attr("max_drawdown_pct", result.max_drawdown_pct or 0)
+            trial.set_user_attr("sharpe_ratio", result.sharpe_ratio or 0)
+
+            # Calculate trades per day
+            if result.start_date and result.end_date:
+                from datetime import datetime as dt_cls
+                start = dt_cls.strptime(result.start_date, "%Y-%m-%d")
+                end = dt_cls.strptime(result.end_date, "%Y-%m-%d")
+                days = max((end - start).days, 1)
+                trades_per_day = result.total_trades / days
+            else:
+                trades_per_day = 0
+            trial.set_user_attr("trades_per_day", trades_per_day)
+
+            if metric == "expectancy":
+                if result.total_trades < 20:
+                    return -999.0
+                freq_factor = min(trades_per_day / 0.5, 1.0)  # Target 0.5+ trades/day
+                return result.total_return_pct * freq_factor
+            elif metric == "final_value":
+                return result.final_value
+            elif metric == "sharpe":
+                return result.sharpe_ratio or -999
+            elif metric == "return":
+                return result.total_return_pct
+            elif metric == "win_rate":
+                if result.total_trades < 20:
+                    return -999.0
+                return result.win_rate_pct or 0.0
+            else:
+                return result.total_return_pct * min(trades_per_day / 0.5, 1.0)
+
+        except Exception as e:
+            print(f"Trial failed: {e}")
+            return -999.0
+
+    return objective
+
+
+def create_v18_objective(metric: str = "final_value", start_date: str = None, end_date: str = None):
+    """
+    Create objective function for v18 (Donchian Channel Breakout).
+    Only 2 optimizable params — 285 total combinations.
+    """
+    def objective(trial: optuna.Trial) -> float:
+        params = {
+            "channel_period": trial.suggest_int("channel_period", 12, 96, step=6),
+            "atr_trail_mult": trial.suggest_float("atr_trail_mult", 1.5, 6.0, step=0.25),
+        }
+
+        try:
+            result = run_backtest(
+                strategy_name="v18",
+                params_override=params,
+                save=False,
+                verbose=False,
+                start_date=start_date,
+                end_date=end_date,
+            )
+
+            trial.set_user_attr("total_return_pct", result.total_return_pct)
+            trial.set_user_attr("total_trades", result.total_trades)
+            trial.set_user_attr("win_rate_pct", result.win_rate_pct or 0)
+            trial.set_user_attr("max_drawdown_pct", result.max_drawdown_pct or 0)
+            trial.set_user_attr("sharpe_ratio", result.sharpe_ratio or 0)
+
+            if metric == "final_value":
+                return result.final_value
+            elif metric == "sharpe":
+                return result.sharpe_ratio or -999
+            elif metric == "return":
+                return result.total_return_pct
+            else:
+                return result.final_value
+
+        except Exception as e:
+            print(f"Trial failed: {e}")
+            return 0.0
+
+    return objective
+
+
 def optimize(
     strategy: str = "v8_fast",
     n_trials: int = 50,
@@ -818,12 +820,8 @@ def optimize(
         objective = create_v8_objective(metric, start_date=start_date, end_date=end_date)
     elif strategy == "v9":
         objective = create_v9_objective(metric, start_date=start_date, end_date=end_date)
-    elif strategy == "v10":
-        objective = create_v10_objective(metric, start_date=start_date, end_date=end_date)
     elif strategy == "v11":
         objective = create_v11_objective(metric)
-    elif strategy == "v12":
-        objective = create_v12_objective(metric)
     elif strategy == "v13":
         objective = create_v13_objective(metric, start_date=start_date, end_date=end_date)
     elif strategy == "v14":
@@ -832,6 +830,10 @@ def optimize(
         objective = create_v15_objective(metric, start_date=start_date, end_date=end_date)
     elif strategy == "v16":
         objective = create_v16_objective(metric, start_date=start_date, end_date=end_date)
+    elif strategy == "v17":
+        objective = create_v17_objective(metric, start_date=start_date, end_date=end_date)
+    elif strategy == "v18":
+        objective = create_v18_objective(metric, start_date=start_date, end_date=end_date)
     else:
         raise ValueError(f"Unknown strategy: {strategy}")
 
@@ -1048,7 +1050,7 @@ Examples:
     parser.add_argument(
         "--strategy", "-s",
         default="v8_fast",
-        choices=["v8", "v8_fast", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v16"],
+        choices=["v8", "v8_fast", "v9", "v11", "v13", "v14", "v15", "v16", "v17", "v18"],
         help="Strategy to optimize (default: v8_fast)"
     )
 
@@ -1063,7 +1065,7 @@ Examples:
         "--metric", "-m",
         default="final_value",
         choices=["final_value", "sharpe", "return", "win_rate", "expectancy"],
-        help="Metric to optimize (default: final_value, v12: win_rate, v15: expectancy)"
+        help="Metric to optimize (default: final_value, v15: expectancy)"
     )
 
     parser.add_argument(

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a cryptocurrency backtesting framework for SOL/USD and other assets using the backtrader library with multi-timeframe analysis. Active strategies: V3, V6, V7, V8, V8 Fast, V9, V10.
+This is a cryptocurrency backtesting framework for SOL/USD and other assets using the backtrader library with multi-timeframe analysis. Active strategies: V3, V6, V7, V8, V8 Fast, V9, V11, V13, V14, V15, V16, V17.
 
 ## Commands
 
@@ -68,7 +68,21 @@ cerebro.run(runonce=False)  # Required for multi-TF stability
 
 ## Strategy Structure
 
-Strategies live in `strategies/` and follow a versioned naming pattern. Active versions: V3, V6, V7, V8, V8 Fast, V9, V10. All are registered in `config.py`.
+Strategies live in `strategies/` and follow a versioned naming pattern. All are registered in `config.py`. V10 and V12 were deleted after failing walk-forward validation.
+
+**Walk-forward validated strategies (only these are trustworthy):**
+- V8 Fast — GOOD (74% OOS retention, ATR-based exits, pattern entries, partial profits)
+- V11 — FAIR (34% OOS retention, consistent win rate, low drawdown, position sizing limits)
+
+**Remaining strategies (failed walk-forward, kept for reference):**
+- V3, V6, V7 — legacy, no optimizer objectives
+- V8 — FAIL (v8_fast is the improved version)
+- V9 — FAIL (0 OOS trades, fixed vol thresholds)
+- V13 — POOR (13% retained, regime-sensitive entries despite ATR exits)
+- V14 — FAIL (barely profitable IS, too many trades with tiny edge)
+- V15 — FAIL (overfit, -53% OOS)
+- V16 — FAIL (too complex, 3 entry types = overfitting)
+- V17 — FAIL (IS +16%, OOS -15%, wick rejection + pullback entries, too many params)
 
 Each strategy class:
 - Inherits from `bt.Strategy`
@@ -77,4 +91,4 @@ Each strategy class:
 - Implements `next()` for bar-by-bar logic
 - Uses `notify_order()` and `notify_trade()` for execution tracking
 
-To create a new strategy, copy the latest version and modify the entry/exit logic.
+**IMPORTANT: Before creating or modifying strategies, read `strategies/STRATEGY_NOTES.md`** — it documents walk-forward results for every strategy, why past strategies failed, design principles that work vs don't, and lessons learned. Key takeaways: use ATR-based exits (not fixed %), use pattern-based entries (not indicator crossovers), implement partial profit-taking, keep 20-60 trades/year, and always validate with `--walk-forward`.

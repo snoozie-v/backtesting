@@ -484,7 +484,7 @@ def run_compare_all(
     """
     if strategies is None:
         # Use primary strategies only (skip asset-specific variants and baselines)
-        strategies = ["v3", "v6", "v7", "v8", "v8_fast", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v16"]
+        strategies = ["v3", "v6", "v7", "v8", "v8_fast", "v9", "v11", "v13", "v14", "v15", "v16", "v17"]
 
     if verbose:
         print(f"\nComparing {len(strategies)} strategies head-to-head")
@@ -544,7 +544,7 @@ Examples:
   python backtest.py --compare v8             # Compare V8 runs
   python backtest.py -s v8_fast --walk-forward  # Walk-forward validation
   python backtest.py --compare-all            # Compare all strategies
-  python backtest.py --compare-all --strategies v8_fast,v9,v10  # Compare subset
+  python backtest.py --compare-all --strategies v8_fast,v9,v13  # Compare subset
         """,
     )
 
@@ -552,7 +552,7 @@ Examples:
     parser.add_argument(
         "--strategy", "-s",
         default="v8",
-        choices=["v3", "v6", "v7", "v8", "v8_fast", "v8_fast_sol", "v8_fast_vet", "v8_baseline", "v9", "v9_baseline", "v9_universal", "v9_sol", "v9_vet", "v10", "v10_baseline", "v10_sol", "v11", "v12", "v13", "v14", "v15", "v15_baseline", "v15_sol", "v15_btc", "v15_eth", "v16"],
+        choices=["v3", "v6", "v7", "v8", "v8_fast", "v8_fast_sol", "v8_fast_vet", "v8_baseline", "v9", "v9_baseline", "v9_universal", "v9_sol", "v9_vet", "v11", "v13", "v14", "v15", "v15_baseline", "v15_sol", "v15_btc", "v15_eth", "v16", "v17", "v18"],
         help="Strategy to run (default: v8)"
     )
 
@@ -596,7 +596,7 @@ Examples:
         "--metric",
         default="final_value",
         choices=["final_value", "sharpe", "return", "win_rate", "expectancy"],
-        help="Metric to optimize (default: final_value, use win_rate for v12, expectancy for v15)"
+        help="Metric to optimize (default: final_value, use expectancy for v15)"
     )
 
     # Result management

@@ -212,28 +212,6 @@ V9_UNIVERSAL_PARAMS = {
 # Default V9 to universal params
 V9_OPTIMIZED_PARAMS = V9_UNIVERSAL_PARAMS
 
-# V10 - Trend Trading with Pullbacks (baseline)
-V10_PARAMS = {
-    "trend_lookback": 3,         # Days to confirm trend
-    "approach_pct": 0.5,         # % within prev day high/low to trigger entry
-    "target_buffer_pct": 1.0,    # % buffer from exact high/low
-    "rr_ratio": 3.0,             # Risk:Reward ratio
-    "min_range_pct": 1.0,        # Minimum prev day range as % of price
-    "cooldown_bars": 4,          # Minimum hourly bars between trades
-    "position_pct": 0.98,        # % of cash to use per trade
-}
-
-# V10 SOL-optimized params (Trial #79 - 150% return, 63.8% win rate, 14.7% max DD)
-V10_SOL_PARAMS = {
-    "approach_pct": 0.5,
-    "cooldown_bars": 11,
-    "min_range_pct": 1.5,
-    "position_pct": 0.94,
-    "rr_ratio": 2.5,
-    "target_buffer_pct": 5.0,
-    "trend_lookback": 2,
-}
-
 # V11 - Combined Range + Trend Strategy (4H Based)
 # Reduced trade frequency to minimize commission drag
 V11_PARAMS = {
@@ -302,30 +280,6 @@ V3_PARAMS = {
 
 # V12 - High Win Rate Trend Scalper
 # Optimized for WIN RATE, not total return
-V12_PARAMS = {
-    # Trend detection (4H)
-    "ema_fast": 8,
-    "ema_slow": 21,
-    "trend_strength": 0.5,
-
-    # Entry conditions (15m)
-    "rsi_period": 14,
-    "rsi_oversold": 40,
-    "rsi_overbought": 60,
-    "pullback_pct": 1.0,
-
-    # Take profit / Stop loss (tight TP, wide SL for high win rate)
-    "tp_pct": 1.0,
-    "sl_pct": 3.0,
-
-    # Position sizing
-    "risk_pct": 2.0,
-    "position_pct": 95.0,
-
-    # Cooldown
-    "cooldown_bars": 4,
-}
-
 # V14 - 4H EMA Trend with 15M Crossover Entries
 # Simple: 4H trend alignment + 15M EMA crossover + volume + ATR TP/SL
 V14_PARAMS = {
@@ -394,6 +348,53 @@ V15_PARAMS = {
 
 # V16 - Trend Exhaustion Catcher (Counter-Trend Complement to V15)
 # Enters when 4H trend is losing momentum (convergence) or showing RSI divergence
+# V17 - ATR Swing Scalper for Leveraged SOL Trading
+# Combines v8_fast ATR exits + v11 risk-based sizing + swing structure entries
+V17_PARAMS = {
+    # 4H Trend EMAs (optimizable)
+    "ema_fast_4h": 9,
+    "ema_slow_4h": 21,
+    "trend_threshold": 0.5,
+
+    # 1H Swing detection (optimizable)
+    "swing_lookback": 3,
+
+    # ATR settings (fixed)
+    "atr_period": 14,
+
+    # Stop/TP multipliers (optimizable)
+    "stop_mult": 1.5,
+    "tp1_mult": 1.5,
+    "tp2_mult": 3.0,
+
+    # Risk management (optimizable)
+    "risk_per_trade_pct": 0.5,
+
+    # Entry tuning (optimizable)
+    "wick_ratio": 0.45,
+    "pullback_zone_mult": 1.5,
+    "enable_pullback_entry": True,
+    "ema_15m_period": 5,
+    "ema_fast_1h": 9,
+
+    # Fixed params
+    "partial_ratio_1": 0.40,
+    "partial_ratio_2": 0.30,
+    "trail_mult": 2.0,
+    "cooldown_bars": 4,
+    "max_hold_bars": 24,
+    "max_leverage": 10.0,
+    "max_position_pct": 30.0,
+    "volume_confirm": False,
+}
+
+# V18 - Donchian Channel Breakout (2 params only)
+V18_PARAMS = {
+    "channel_period": 90,      # 1H bars lookback (~3.75 days)
+    "atr_trail_mult": 6.0,     # ATR trailing stop multiplier
+    "atr_period": 14,          # ATR calc period on 1H (fixed)
+}
+
 V16_PARAMS = {
     # 4H Trend EMAs
     "ema_fast_4h_period": 9,
@@ -552,6 +553,8 @@ V13_PARAMS = {
 
 # Map strategy names to their parameter sets
 STRATEGY_PARAMS: Dict[str, Dict[str, Any]] = {
+    "v18": V18_PARAMS,
+    "v17": V17_PARAMS,
     "v16": V16_PARAMS,
     "v15": V15_SOL_PARAMS,  # Default to SOL-optimized
     "v15_baseline": V15_PARAMS,
@@ -560,11 +563,7 @@ STRATEGY_PARAMS: Dict[str, Dict[str, Any]] = {
     "v15_eth": V15_ETH_PARAMS,
     "v14": V14_PARAMS,
     "v13": V13_PARAMS,
-    "v12": V12_PARAMS,
     "v11": V11_PARAMS,
-    "v10": V10_SOL_PARAMS,  # Default to optimized
-    "v10_baseline": V10_PARAMS,
-    "v10_sol": V10_SOL_PARAMS,
     "v9": V9_UNIVERSAL_PARAMS,  # Default to universal
     "v9_baseline": V9_PARAMS,
     "v9_universal": V9_UNIVERSAL_PARAMS,
@@ -595,15 +594,17 @@ def register_strategies():
     from strategies.sol_strategy_v8 import SolStrategyV8
     from strategies.sol_strategy_v8_fast import SolStrategyV8Fast
     from strategies.sol_strategy_v9 import SolStrategyV9
-    from strategies.sol_strategy_v10 import SolStrategyV10
     from strategies.sol_strategy_v11 import SolStrategyV11
-    from strategies.sol_strategy_v12 import SolStrategyV12
     from strategies.sol_strategy_v13 import SolStrategyV13
     from strategies.sol_strategy_v14 import SolStrategyV14
     from strategies.sol_strategy_v15 import SolStrategyV15
     from strategies.sol_strategy_v16 import SolStrategyV16
+    from strategies.sol_strategy_v17 import SolStrategyV17
+    from strategies.sol_strategy_v18 import SolStrategyV18
 
     STRATEGY_CLASSES.update({
+        "v18": SolStrategyV18,
+        "v17": SolStrategyV17,
         "v16": SolStrategyV16,
         "v15": SolStrategyV15,
         "v15_baseline": SolStrategyV15,
@@ -612,11 +613,7 @@ def register_strategies():
         "v15_eth": SolStrategyV15,
         "v14": SolStrategyV14,
         "v13": SolStrategyV13,
-        "v12": SolStrategyV12,
         "v11": SolStrategyV11,
-        "v10": SolStrategyV10,
-        "v10_baseline": SolStrategyV10,
-        "v10_sol": SolStrategyV10,
         "v9": SolStrategyV9,
         "v9_baseline": SolStrategyV9,
         "v9_universal": SolStrategyV9,

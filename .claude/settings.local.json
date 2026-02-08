@@ -15,7 +15,10 @@
       "Bash(git push:*)",
       "Bash(pip install:*)",
       "Bash(git fetch:*)",
-      "Bash(git stash:*)"
+      "Bash(git stash:*)",
+      "Bash(while ps aux:*)",
+      "Bash(do sleep 60)",
+      "Bash(done)"
     ]
   }
 }

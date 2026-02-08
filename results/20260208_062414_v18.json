@@ -1,0 +1,27 @@
+{
+  "run_id": "20260208_062414",
+  "timestamp": "2026-02-08T06:24:14.385258",
+  "strategy": "v18",
+  "data_source": "binance",
+  "params": {
+    "channel_period": 48,
+    "atr_trail_mult": 3.0,
+    "atr_period": 14
+  },
+  "starting_value": 10000.0,
+  "final_value": 4303.703606956338,
+  "total_return_pct": -56.962963930436615,
+  "max_drawdown_pct": 86.03776250206877,
+  "sharpe_ratio": null,
+  "total_trades": 614,
+  "winning_trades": 207,
+  "losing_trades": 407,
+  "win_rate_pct": 33.71335504885993,
+  "avg_trade_pct": -0.09277355688996192,
+  "start_date": "2021-01-01",
+  "end_date": "2026-01-12",
+  "buy_hold_value": 918333.6634317026,
+  "buy_hold_return_pct": 9083.336634317026,
+  "alpha_pct": -9140.299598247462,
+  "notes": ""
+}

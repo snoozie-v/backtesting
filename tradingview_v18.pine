@@ -1,0 +1,318 @@
+//@version=5
+indicator("V18 - Donchian Channel Breakout + ATR Trailing Stop", overlay=true, max_lines_count=500, max_labels_count=500)
+
+// ============================================================================
+// STRATEGY NOTATIONS & COMMENTS
+// ============================================================================
+// This script implements the V18 Donchian Channel Breakout strategy for visualization and historical simulation.
+// Key design:
+// - Donchian channel on 1H (N-bar highest high / lowest low) for entry signals
+// - ATR trailing stop for exits (HWM/LWM - ATR * multiplier)
+// - Long: close breaks above previous bar's channel high
+// - Short: close breaks below previous bar's channel low
+// - Only 2 optimizable params: channel_period and atr_trail_mult
+// - Walk-forward validated: OOS +192.75%
+// Limitations: No live orders; simulates historical trades for visualization. Run on 1H chart.
+
+// ============================================================================
+// INPUTS
+// ============================================================================
+
+// Donchian Channel (Optimized)
+channel_period    = input.int(90,    "Channel Period (1H bars)", minval=6, step=6)
+atr_trail_mult    = input.float(6.0, "ATR Trailing Stop Multiplier", minval=1.0, step=0.25)
+
+// ATR (Fixed)
+atr_period        = input.int(14,    "ATR Period")
+
+// Display
+show_channel      = input.bool(true, "Show Donchian Channel")
+show_channel_fill = input.bool(true, "Show Channel Fill")
+show_trail_stop   = input.bool(true, "Show Trailing Stop Line")
+show_trade_labels = input.bool(true, "Show Trade Plan Labels")
+show_exit_labels  = input.bool(true, "Show Exit Labels")
+
+// Account & Risk
+account_equity    = input.float(10000, "Account Equity ($)", step=1000)
+
+// ============================================================================
+// DONCHIAN CHANNEL
+// ============================================================================
+
+channel_high = ta.highest(high, channel_period)
+channel_low  = ta.lowest(low, channel_period)
+
+ch_plot = plot(show_channel ? channel_high : na, title="Channel High", color=color.new(color.teal, 30), linewidth=2)
+cl_plot = plot(show_channel ? channel_low : na,  title="Channel Low",  color=color.new(color.orange, 30), linewidth=2)
+
+fill(ch_plot, cl_plot, color=show_channel_fill ? color.new(color.blue, 92) : na, title="Channel Fill")
+
+// ============================================================================
+// ATR
+// ============================================================================
+
+atr = ta.atr(atr_period)
+
+// ============================================================================
+// ENTRY SIGNALS (Breakout: close vs previous bar's channel)
+// ============================================================================
+
+prev_channel_high = channel_high[1]
+prev_channel_low  = channel_low[1]
+
+long_breakout  = close > prev_channel_high and not na(prev_channel_high)
+short_breakout = close < prev_channel_low and not na(prev_channel_low)
+
+// ============================================================================
+// TRADE TRACKING (Simulate Historical Trades)
+// ============================================================================
+
+var float active_entry     = na
+var int   active_direction = 0       // 1=long, -1=short, 0=flat
+var float active_atr       = na      // ATR snapshot at entry (fixed for trade)
+var float high_water_mark  = na      // For long trailing stop
+var float low_water_mark   = na      // For short trailing stop
+var float active_trail_stop = na     // Current trailing stop level
+
+// Stats tracking
+var int   total_trades     = 0
+var int   winning_trades   = 0
+var int   losing_trades    = 0
+
+// ============================================================================
+// TRAILING STOP UPDATE (Every bar while in position)
+// ============================================================================
+
+if active_direction == 1
+    // Update high water mark
+    if close > high_water_mark or high > high_water_mark
+        high_water_mark := math.max(close, high)
+    // Compute trailing stop
+    active_trail_stop := high_water_mark - (active_atr * atr_trail_mult)
+
+if active_direction == -1
+    // Update low water mark
+    if close < low_water_mark or low < low_water_mark
+        low_water_mark := math.min(close, low)
+    // Compute trailing stop
+    active_trail_stop := low_water_mark + (active_atr * atr_trail_mult)
+
+// ============================================================================
+// EXIT LOGIC (Trailing stop hit)
+// ============================================================================
+
+var bool exit_long_signal  = false
+var bool exit_short_signal = false
+var float exit_pnl_pct     = na
+
+exit_long_signal  := false
+exit_short_signal := false
+exit_pnl_pct     := na
+
+// Long exit: price hits trailing stop
+if active_direction == 1 and close <= active_trail_stop
+    exit_pnl_pct := ((close - active_entry) / active_entry) * 100
+    total_trades += 1
+    if close > active_entry
+        winning_trades += 1
+    else
+        losing_trades += 1
+    exit_long_signal := true
+    active_direction := 0
+    active_entry     := na
+    active_atr       := na
+    high_water_mark  := na
+    active_trail_stop := na
+
+// Short exit: price hits trailing stop
+if active_direction == -1 and close >= active_trail_stop
+    exit_pnl_pct := ((active_entry - close) / active_entry) * 100
+    total_trades += 1
+    if close < active_entry
+        winning_trades += 1
+    else
+        losing_trades += 1
+    exit_short_signal := true
+    active_direction  := 0
+    active_entry      := na
+    active_atr        := na
+    low_water_mark    := na
+    active_trail_stop := na
+
+// ============================================================================
+// REVERSAL HANDLING (Close opposite position before entering new)
+// ============================================================================
+
+var bool reversal_exit_long  = false
+var bool reversal_exit_short = false
+var float reversal_pnl_pct   = na
+
+reversal_exit_long  := false
+reversal_exit_short := false
+reversal_pnl_pct   := na
+
+// Long breakout while short -> close short, enter long
+if long_breakout and active_direction == -1
+    reversal_pnl_pct := ((active_entry - close) / active_entry) * 100
+    total_trades += 1
+    if close < active_entry
+        winning_trades += 1
+    else
+        losing_trades += 1
+    reversal_exit_short := true
+    active_direction    := 0
+    active_entry        := na
+    active_atr          := na
+    low_water_mark      := na
+    active_trail_stop   := na
+
+// Short breakout while long -> close long, enter short
+if short_breakout and active_direction == 1
+    reversal_pnl_pct := ((close - active_entry) / active_entry) * 100
+    total_trades += 1
+    if close > active_entry
+        winning_trades += 1
+    else
+        losing_trades += 1
+    reversal_exit_long  := true
+    active_direction    := 0
+    active_entry        := na
+    active_atr          := na
+    high_water_mark     := na
+    active_trail_stop   := na
+
+// ============================================================================
+// NEW ENTRIES
+// ============================================================================
+
+var bool new_long_entry  = false
+var bool new_short_entry = false
+
+new_long_entry  := false
+new_short_entry := false
+
+// Long entry
+if long_breakout and active_direction == 0 and atr > 0
+    active_entry     := close
+    active_direction := 1
+    active_atr       := atr
+    high_water_mark  := close
+    active_trail_stop := close - (atr * atr_trail_mult)
+    new_long_entry   := true
+
+    if show_trade_labels
+        trail_dist = atr * atr_trail_mult
+        label_text = "LONG BREAKOUT\n" +
+             "Entry: $" + str.tostring(close, "#.##") + "\n" +
+             "Trail: $" + str.tostring(close - trail_dist, "#.##") + "\n" +
+             "ATR:   $" + str.tostring(atr, "#.##") + "\n" +
+             "Dist:  " + str.tostring(atr_trail_mult, "#.#") + "x ATR ($" + str.tostring(trail_dist, "#.##") + ")\n" +
+             "Ch Hi: $" + str.tostring(prev_channel_high, "#.##")
+        label.new(bar_index, close, label_text, color=color.new(color.green, 15), textcolor=color.white, style=label.style_label_up, size=size.normal)
+
+// Short entry
+if short_breakout and active_direction == 0 and atr > 0
+    active_entry     := close
+    active_direction := -1
+    active_atr       := atr
+    low_water_mark   := close
+    active_trail_stop := close + (atr * atr_trail_mult)
+    new_short_entry  := true
+
+    if show_trade_labels
+        trail_dist = atr * atr_trail_mult
+        label_text = "SHORT BREAKOUT\n" +
+             "Entry: $" + str.tostring(close, "#.##") + "\n" +
+             "Trail: $" + str.tostring(close + trail_dist, "#.##") + "\n" +
+             "ATR:   $" + str.tostring(atr, "#.##") + "\n" +
+             "Dist:  " + str.tostring(atr_trail_mult, "#.#") + "x ATR ($" + str.tostring(trail_dist, "#.##") + ")\n" +
+             "Ch Lo: $" + str.tostring(prev_channel_low, "#.##")
+        label.new(bar_index, close, label_text, color=color.new(color.red, 15), textcolor=color.white, style=label.style_label_down, size=size.normal)
+
+// ============================================================================
+// EXIT LABELS
+// ============================================================================
+
+if show_exit_labels and exit_long_signal
+    exit_color = exit_pnl_pct >= 0 ? color.new(color.green, 30) : color.new(color.red, 30)
+    label.new(bar_index, close, "TRAIL STOP\n" + str.tostring(exit_pnl_pct, "+#.##") + "%", color=exit_color, textcolor=color.white, style=label.style_label_down, size=size.small)
+
+if show_exit_labels and exit_short_signal
+    exit_color = exit_pnl_pct >= 0 ? color.new(color.green, 30) : color.new(color.red, 30)
+    label.new(bar_index, close, "TRAIL STOP\n" + str.tostring(exit_pnl_pct, "+#.##") + "%", color=exit_color, textcolor=color.white, style=label.style_label_up, size=size.small)
+
+if show_exit_labels and reversal_exit_long
+    exit_color = reversal_pnl_pct >= 0 ? color.new(color.green, 30) : color.new(color.red, 30)
+    label.new(bar_index, close, "REVERSAL EXIT\n" + str.tostring(reversal_pnl_pct, "+#.##") + "%", color=exit_color, textcolor=color.white, style=label.style_label_down, size=size.small)
+
+if show_exit_labels and reversal_exit_short
+    exit_color = reversal_pnl_pct >= 0 ? color.new(color.green, 30) : color.new(color.red, 30)
+    label.new(bar_index, close, "REVERSAL EXIT\n" + str.tostring(reversal_pnl_pct, "+#.##") + "%", color=exit_color, textcolor=color.white, style=label.style_label_up, size=size.small)
+
+// ============================================================================
+// PLOT SIGNALS
+// ============================================================================
+
+plotshape(new_long_entry,  title="Long Breakout",  location=location.belowbar, color=color.green, style=shape.triangleup, size=size.small)
+plotshape(new_short_entry, title="Short Breakout",  location=location.abovebar, color=color.red, style=shape.triangledown, size=size.small)
+
+plotshape(exit_long_signal,  title="Long Trail Stop",  location=location.abovebar, color=color.orange, style=shape.xcross, size=size.small)
+plotshape(exit_short_signal, title="Short Trail Stop", location=location.belowbar, color=color.orange, style=shape.xcross, size=size.small)
+
+// Trend Background (in channel = neutral, breakout = colored)
+in_long  = active_direction == 1
+in_short = active_direction == -1
+bgcolor(in_long ? color.new(color.green, 92) : in_short ? color.new(color.red, 92) : na, title="Position Background")
+
+// Dynamic Trailing Stop Line
+trail_stop_color = active_direction == 1 ? color.lime : active_direction == -1 ? color.fuchsia : na
+plot(show_trail_stop and active_direction != 0 ? active_trail_stop : na, title="Trailing Stop", color=trail_stop_color, style=plot.style_stepline, linewidth=2)
+
+// ============================================================================
+// DASHBOARD
+// ============================================================================
+
+// Position sizing calc (98% of equity like backtest)
+position_size = account_equity * 0.98 / close
+
+win_rate = total_trades > 0 ? (winning_trades / total_trades) * 100 : 0.0
+
+var table info = table.new(position.top_right, 2, 8, bgcolor=color.new(color.black, 80))
+if barstate.islast
+    table.cell(info, 0, 0, "Strategy", text_color=color.white)
+    table.cell(info, 1, 0, "V18 Donchian", text_color=color.teal)
+
+    table.cell(info, 0, 1, "Position", text_color=color.white)
+    pos_text = active_direction == 1 ? "LONG" : active_direction == -1 ? "SHORT" : "FLAT"
+    table.cell(info, 1, 1, pos_text, text_color=active_direction == 1 ? color.green : active_direction == -1 ? color.red : color.gray)
+
+    table.cell(info, 0, 2, "Channel", text_color=color.white)
+    table.cell(info, 1, 2, str.tostring(channel_period) + " bars ($" + str.tostring(channel_high - channel_low, "#.##") + " width)", text_color=color.white)
+
+    table.cell(info, 0, 3, "Trail Stop", text_color=color.white)
+    trail_text = active_direction != 0 ? "$" + str.tostring(active_trail_stop, "#.##") : "N/A"
+    table.cell(info, 1, 3, trail_text, text_color=active_direction != 0 ? color.yellow : color.gray)
+
+    table.cell(info, 0, 4, "ATR (14)", text_color=color.white)
+    table.cell(info, 1, 4, "$" + str.tostring(atr, "#.##") + " | Trail: " + str.tostring(atr_trail_mult, "#.#") + "x ($" + str.tostring(atr * atr_trail_mult, "#.##") + ")", text_color=color.white)
+
+    table.cell(info, 0, 5, "HWM / LWM", text_color=color.white)
+    hwm_lwm_text = active_direction == 1 ? "$" + str.tostring(high_water_mark, "#.##") : active_direction == -1 ? "$" + str.tostring(low_water_mark, "#.##") : "N/A"
+    table.cell(info, 1, 5, hwm_lwm_text, text_color=active_direction != 0 ? color.yellow : color.gray)
+
+    table.cell(info, 0, 6, "Sizing", text_color=color.white)
+    table.cell(info, 1, 6, str.tostring(position_size, "#.##") + " units (98%)", text_color=color.white)
+
+    table.cell(info, 0, 7, "Win Rate", text_color=color.white)
+    wr_color = win_rate >= 40 ? color.green : win_rate >= 30 ? color.yellow : color.red
+    table.cell(info, 1, 7, str.tostring(winning_trades) + "W / " + str.tostring(losing_trades) + "L (" + str.tostring(win_rate, "#.#") + "%)", text_color=wr_color)
+
+// ============================================================================
+// ALERTS
+// ============================================================================
+
+alertcondition(new_long_entry,  "V18 Long Breakout",  "V18: Long breakout - close above " + str.tostring(channel_period) + "-bar channel high")
+alertcondition(new_short_entry, "V18 Short Breakout", "V18: Short breakout - close below " + str.tostring(channel_period) + "-bar channel low")
+alertcondition(exit_long_signal,  "V18 Long Trail Stop",  "V18: Long trailing stop hit")
+alertcondition(exit_short_signal, "V18 Short Trail Stop", "V18: Short trailing stop hit")
+alertcondition(reversal_exit_long or reversal_exit_short, "V18 Reversal", "V18: Position reversed on opposite breakout")

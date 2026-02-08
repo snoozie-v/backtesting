@@ -2,6 +2,9 @@
 """
 SolStrategy v15 - Zone Trader (1-2 Trades/Day for 20-Trade Exercise)
 --------------------------------------------------------------------
+NOTE: FAILS walk-forward validation. IS: +137%, OOS: -53% (overfit).
+Top params by importance: ema_slow_1h_period (41%), trend_deadzone_pct (19%), cooldown_bars (8%).
+--------------------------------------------------------------------
 Designed for the Mark Douglas "Trading in the Zone" 20-trade exercise.
 Targets 0.5-1 trade/day per pair with positive expectancy.
 
