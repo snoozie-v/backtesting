@@ -250,24 +250,25 @@ if show_exit_labels and reversal_exit_short
     label.new(bar_index, close, "REVERSAL EXIT\n" + str.tostring(reversal_pnl_pct, "+#.##") + "%", color=exit_color, textcolor=color.white, style=label.style_label_up, size=size.small)
 
 // ============================================================================
-// PLOT SIGNALS
+// PLOT SIGNALS (Enhanced for Visibility)
 // ============================================================================
+plotshape(new_long_entry, title="Long Breakout", location=location.belowbar, color=color.lime, style=shape.triangleup, size=size.normal)  // Bigger & brighter
+plotshape(new_short_entry, title="Short Breakout", location=location.abovebar, color=color.red, style=shape.triangledown, size=size.normal)
+plotshape(exit_long_signal, title="Long Trail Stop", location=location.abovebar, color=color.orange, style=shape.xcross, size=size.normal)
+plotshape(exit_short_signal, title="Short Trail Stop", location=location.belowbar, color=color.orange, style=shape.xcross, size=size.normal)
 
-plotshape(new_long_entry,  title="Long Breakout",  location=location.belowbar, color=color.green, style=shape.triangleup, size=size.small)
-plotshape(new_short_entry, title="Short Breakout",  location=location.abovebar, color=color.red, style=shape.triangledown, size=size.small)
+// Debug: All potential breakouts (remove after testing)
+plotshape(long_breakout, title="Debug Long Potential", location=location.belowbar, color=color.new(color.blue, 0), style=shape.circle, size=size.tiny)
+plotshape(short_breakout, title="Debug Short Potential", location=location.abovebar, color=color.new(color.purple, 0), style=shape.circle, size=size.tiny)
 
-plotshape(exit_long_signal,  title="Long Trail Stop",  location=location.abovebar, color=color.orange, style=shape.xcross, size=size.small)
-plotshape(exit_short_signal, title="Short Trail Stop", location=location.belowbar, color=color.orange, style=shape.xcross, size=size.small)
-
-// Trend Background (in channel = neutral, breakout = colored)
-in_long  = active_direction == 1
+// Trend Background (Stronger opacity for positions)
+in_long = active_direction == 1
 in_short = active_direction == -1
-bgcolor(in_long ? color.new(color.green, 92) : in_short ? color.new(color.red, 92) : na, title="Position Background")
+bgcolor(in_long ? color.new(color.green, 85) : in_short ? color.new(color.red, 85) : na, title="Position Background")  // Less transparent
 
-// Dynamic Trailing Stop Line
-trail_stop_color = active_direction == 1 ? color.lime : active_direction == -1 ? color.fuchsia : na
-plot(show_trail_stop and active_direction != 0 ? active_trail_stop : na, title="Trailing Stop", color=trail_stop_color, style=plot.style_stepline, linewidth=2)
-
+// Dynamic Trailing Stop Line (Always show if active, brighter)
+trail_stop_color = active_direction == 1 ? color.new(color.lime, 0) : active_direction == -1 ? color.new(color.fuchsia, 0) : na
+plot(show_trail_stop and active_direction != 0 ? active_trail_stop : na, title="Trailing Stop", color=trail_stop_color, style=plot.style_stepline, linewidth=3)  // Thicker
 // ============================================================================
 // DASHBOARD
 // ============================================================================
@@ -310,9 +311,8 @@ if barstate.islast
 // ============================================================================
 // ALERTS
 // ============================================================================
-
-alertcondition(new_long_entry,  "V18 Long Breakout",  "V18: Long breakout - close above " + str.tostring(channel_period) + "-bar channel high")
-alertcondition(new_short_entry, "V18 Short Breakout", "V18: Short breakout - close below " + str.tostring(channel_period) + "-bar channel low")
-alertcondition(exit_long_signal,  "V18 Long Trail Stop",  "V18: Long trailing stop hit")
-alertcondition(exit_short_signal, "V18 Short Trail Stop", "V18: Short trailing stop hit")
-alertcondition(reversal_exit_long or reversal_exit_short, "V18 Reversal", "V18: Position reversed on opposite breakout")
+alertcondition(new_long_entry,  title="V18 Long Breakout",  message="V18: Long breakout - close above channel high ({{channel_period}}-bar channel)")
+alertcondition(new_short_entry, title="V18 Short Breakout", message="V18: Short breakout - close below channel low ({{channel_period}}-bar channel)")
+alertcondition(exit_long_signal, title="V18 Long Trail Stop", message="V18: Long trailing stop hit")
+alertcondition(exit_short_signal, title="V18 Short Trail Stop", message="V18: Short trailing stop hit")
+alertcondition(reversal_exit_long or reversal_exit_short, title="V18 Reversal", message="V18: Position reversed on opposite breakout")

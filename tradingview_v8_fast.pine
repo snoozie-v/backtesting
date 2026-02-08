@@ -1,0 +1,546 @@
+//@version=5
+indicator("V8 Fast - Rounded Bottom/Top Catcher (4H Drop/Rise, ATR Stops)", overlay=true, max_lines_count=500, max_labels_count=500)
+
+// ============================================================================
+// STRATEGY NOTATIONS & COMMENTS
+// ============================================================================
+// This script implements the V8 Fast strategy for both LONG and SHORT directions.
+//
+// LONG (Rounded Bottom):
+// - Detect FAST DROP: >=10% decline over max 90 4H bars
+// - Then look for SLOW/CONTROLLED RISE (sliding window):
+//   >=40% up bars, no explosive bars, total rise >=3%
+// - MTF filter: 4H close > daily EMA
+//
+// SHORT (Rounded Top - exact inverse):
+// - Detect FAST PUMP: >=10% rise over max 90 4H bars
+// - Then look for SLOW/CONTROLLED DECLINE (sliding window):
+//   >=40% down bars, no explosive bars, total decline >=3%
+// - MTF filter: 4H close < daily EMA
+//
+// Exits: ATR-based trailing stop, ATR-based fixed stop, partial profit at ATR * 4.0
+// Recommended chart: 4H timeframe.
+
+// ============================================================================
+// INPUTS
+// ============================================================================
+
+// Drop/Pump Detection
+drop_window       = input.int(90,    "Drop/Pump Window (4H bars)", minval=10, maxval=200)
+min_drop_pct      = input.float(10.0, "Min Drop/Pump %",           step=1.0)
+
+// Rise/Decline (Recovery) Requirements
+rise_window       = input.int(120,   "Rise/Decline Window (4H bars)", minval=10, maxval=300)
+min_up_bars_ratio = input.float(0.40, "Min Directional Bars Ratio",   step=0.05, minval=0.1, maxval=0.9)
+max_single_up     = input.float(8.0,  "Max Single Up Bar %",          step=0.5)
+max_single_down   = input.float(-6.0, "Max Single Down Bar %",        step=0.5)
+min_rise_pct      = input.float(3.0,  "Min Total Move %",             step=0.5)
+
+// Volume Confirmation
+use_volume        = input.bool(false, "Require Volume Confirmation")
+vol_sma_len       = input.int(120,    "Volume SMA Length")
+
+// Daily EMA Filter
+daily_ema_len     = input.int(5,      "Daily EMA Period")
+
+// ATR & Stops
+atr_period        = input.int(14,     "ATR Period")
+atr_trailing_mult = input.float(3.0,  "Trailing Stop ATR Mult", step=0.25)
+atr_fixed_mult    = input.float(2.0,  "Fixed Stop ATR Mult",    step=0.25)
+
+// Fallback Fixed Stops
+trailing_pct      = input.float(6.0,  "Fallback Trailing %",    step=0.5)
+fixed_stop_pct    = input.float(4.0,  "Fallback Fixed Stop %",  step=0.5)
+
+// Partial Profit-Taking
+use_partial       = input.bool(true,  "Enable Partial Profit")
+partial_target_mult = input.float(4.0, "Partial Target ATR Mult", step=0.25)
+partial_sell_ratio  = input.float(0.5, "Partial Sell Ratio",      step=0.1, minval=0.1, maxval=0.9)
+
+// Direction Toggles
+enable_longs      = input.bool(true,  "Enable Long Entries")
+enable_shorts     = input.bool(true,  "Enable Short Entries")
+
+// Display
+show_tp_sl_lines    = input.bool(true, "Show TP/SL Lines")
+show_trade_labels   = input.bool(true, "Show Trade Plan Labels")
+show_dynamic_sl     = input.bool(true, "Show Dynamic SL Line")
+show_partial_labels = input.bool(true, "Show Partial TP Labels")
+show_drop_labels    = input.bool(true, "Show Drop/Pump Detection Labels")
+
+// Account
+account_equity    = input.float(10000, "Account Equity ($)", step=1000)
+
+// ============================================================================
+// DAILY EMA (MTF Filter)
+// ============================================================================
+
+daily_ema = request.security(syminfo.tickerid, "D", ta.ema(close, daily_ema_len))
+plot(daily_ema, color=color.new(color.orange, 30), title="Daily EMA", linewidth=2)
+
+// ============================================================================
+// ATR & VOLUME
+// ============================================================================
+
+atr = ta.atr(atr_period)
+vol_sma = ta.sma(volume, vol_sma_len)
+high_volume = volume > vol_sma
+vol_ratio = vol_sma > 0 ? volume / vol_sma : 0.0
+
+// ============================================================================
+// DROP / PUMP DETECTION
+// ============================================================================
+
+peak_val   = ta.highest(close, drop_window)
+trough_val = ta.lowest(close, drop_window)
+
+// Drop % (negative = drop occurred)
+drop_pct = peak_val > 0 ? (trough_val - peak_val) / peak_val * 100 : 0.0
+// Pump % (positive = pump occurred)
+pump_pct = trough_val > 0 ? (peak_val - trough_val) / trough_val * 100 : 0.0
+
+// Bar-over-bar change
+bar_change_pct = close[1] > 0 ? (close - close[1]) / close[1] * 100 : 0.0
+
+// ============================================================================
+// LONG STATE (Drop → Rise → Long Entry)
+// ============================================================================
+
+var bool  long_drop_detected = false
+var bool  show_drop_flag     = false
+var float[] long_win_close   = array.new_float(0)
+var float[] long_win_change  = array.new_float(0)
+var float[] long_win_vol     = array.new_float(0)
+
+// ============================================================================
+// SHORT STATE (Pump → Decline → Short Entry)
+// ============================================================================
+
+var bool  short_pump_detected = false
+var bool  show_pump_flag      = false
+var float[] short_win_close   = array.new_float(0)
+var float[] short_win_change  = array.new_float(0)
+var float[] short_win_vol     = array.new_float(0)
+
+// ============================================================================
+// TRADE STATE (shared - one position at a time)
+// ============================================================================
+
+var int   active_direction = 0  // 0=flat, 1=long, -1=short
+var float active_entry     = na
+var float active_sl        = na
+var float active_fixed_sl  = na
+var float active_partial   = na
+var float active_hwm       = na  // high water mark (long) / low water mark (short)
+var float entry_atr        = na
+var bool  partial_taken    = false
+var int   bars_in_trade    = 0
+var int   sl_state         = 0   // 0=initial, 1=breakeven
+
+if active_direction != 0
+    bars_in_trade := bars_in_trade + 1
+
+// ============================================================================
+// LONG: DROP DETECTION
+// ============================================================================
+
+long_drop_trigger = enable_longs and not long_drop_detected and drop_pct <= -min_drop_pct and active_direction == 0
+
+if long_drop_trigger
+    long_drop_detected := true
+    array.clear(long_win_close)
+    array.clear(long_win_change)
+    array.clear(long_win_vol)
+    show_drop_flag := true
+
+if show_drop_labels and show_drop_flag
+    label.new(bar_index, low, "DROP\n" + str.tostring(math.abs(drop_pct), "#.#") + "%",
+         color=color.new(color.red, 15), textcolor=color.white,
+         style=label.style_label_up, size=size.small)
+    show_drop_flag := false
+
+// ============================================================================
+// SHORT: PUMP DETECTION
+// ============================================================================
+
+short_pump_trigger = enable_shorts and not short_pump_detected and pump_pct >= min_drop_pct and active_direction == 0
+
+if short_pump_trigger
+    short_pump_detected := true
+    array.clear(short_win_close)
+    array.clear(short_win_change)
+    array.clear(short_win_vol)
+    show_pump_flag := true
+
+if show_drop_labels and show_pump_flag
+    label.new(bar_index, high, "PUMP\n" + str.tostring(pump_pct, "#.#") + "%",
+         color=color.new(color.green, 15), textcolor=color.white,
+         style=label.style_label_down, size=size.small)
+    show_pump_flag := false
+
+// ============================================================================
+// LONG: SLIDING WINDOW RISE DETECTION
+// ============================================================================
+
+var bool long_entry_signal = false
+long_entry_signal := false
+
+if long_drop_detected and active_direction == 0
+    is_explosive = bar_change_pct > max_single_up
+    is_panic     = bar_change_pct < max_single_down
+
+    if not is_explosive and not is_panic
+        array.push(long_win_close, close)
+        array.push(long_win_change, bar_change_pct)
+        array.push(long_win_vol, volume)
+
+        while array.size(long_win_close) > rise_window
+            array.shift(long_win_close)
+            array.shift(long_win_change)
+            array.shift(long_win_vol)
+
+        min_bars = math.max(rise_window / 2, 10)
+        if array.size(long_win_close) >= min_bars
+            up_count = 0
+            total_bars = array.size(long_win_change)
+            for i = 0 to total_bars - 1
+                if array.get(long_win_change, i) > 0
+                    up_count += 1
+            up_ratio = total_bars > 0 ? up_count / total_bars : 0.0
+
+            start_price = array.get(long_win_close, 0)
+            end_price   = array.get(long_win_close, total_bars - 1)
+            total_rise  = start_price > 0 ? (end_price - start_price) / start_price * 100 : 0.0
+
+            vol_ok = true
+            if use_volume
+                avg_win_vol = array.avg(long_win_vol)
+                vol_ok := avg_win_vol >= vol_sma
+
+            mtf_ok = close > daily_ema
+
+            if up_ratio >= min_up_bars_ratio and total_rise >= min_rise_pct and vol_ok and mtf_ok
+                long_entry_signal := true
+
+// ============================================================================
+// SHORT: SLIDING WINDOW DECLINE DETECTION
+// ============================================================================
+
+var bool short_entry_signal = false
+short_entry_signal := false
+
+if short_pump_detected and active_direction == 0
+    // Inverse thresholds: skip bars that are too explosive in either direction
+    is_explosive_down = bar_change_pct < max_single_down  // big panic drop = skip
+    is_explosive_up   = bar_change_pct > max_single_up    // big spike up = skip
+
+    if not is_explosive_down and not is_explosive_up
+        array.push(short_win_close, close)
+        array.push(short_win_change, bar_change_pct)
+        array.push(short_win_vol, volume)
+
+        while array.size(short_win_close) > rise_window
+            array.shift(short_win_close)
+            array.shift(short_win_change)
+            array.shift(short_win_vol)
+
+        min_bars_s = math.max(rise_window / 2, 10)
+        if array.size(short_win_close) >= min_bars_s
+            // Count DOWN bars (inverse of long counting up bars)
+            down_count = 0
+            total_bars_s = array.size(short_win_change)
+            for i = 0 to total_bars_s - 1
+                if array.get(short_win_change, i) < 0
+                    down_count += 1
+            down_ratio = total_bars_s > 0 ? down_count / total_bars_s : 0.0
+
+            start_price_s = array.get(short_win_close, 0)
+            end_price_s   = array.get(short_win_close, total_bars_s - 1)
+            // Total decline (should be negative, we check absolute value)
+            total_decline  = start_price_s > 0 ? (start_price_s - end_price_s) / start_price_s * 100 : 0.0
+
+            vol_ok_s = true
+            if use_volume
+                avg_win_vol_s = array.avg(short_win_vol)
+                vol_ok_s := avg_win_vol_s >= vol_sma
+
+            // MTF filter: close BELOW daily EMA for shorts
+            mtf_ok_s = close < daily_ema
+
+            if down_ratio >= min_up_bars_ratio and total_decline >= min_rise_pct and vol_ok_s and mtf_ok_s
+                short_entry_signal := true
+
+// ============================================================================
+// STOP MANAGEMENT - LONG
+// ============================================================================
+
+if active_direction == 1
+    active_hwm := math.max(active_hwm, close)
+
+    if not na(entry_atr) and entry_atr > 0
+        trail_stop = active_hwm - (entry_atr * atr_trailing_mult)
+        fix_stop   = active_entry - (entry_atr * atr_fixed_mult)
+        active_sl  := math.max(trail_stop, fix_stop)
+        active_fixed_sl := fix_stop
+    else
+        trail_stop = active_hwm * (1 - trailing_pct / 100)
+        fix_stop   = active_entry * (1 - fixed_stop_pct / 100)
+        active_sl  := math.max(trail_stop, fix_stop)
+        active_fixed_sl := fix_stop
+
+    if active_sl >= active_entry and sl_state < 1
+        sl_state := 1
+
+// ============================================================================
+// STOP MANAGEMENT - SHORT (inverse)
+// ============================================================================
+
+if active_direction == -1
+    // Low water mark (price moving down is good for shorts)
+    active_hwm := math.min(active_hwm, close)
+
+    if not na(entry_atr) and entry_atr > 0
+        // Trailing stop above low water mark
+        trail_stop_s = active_hwm + (entry_atr * atr_trailing_mult)
+        // Fixed stop above entry
+        fix_stop_s   = active_entry + (entry_atr * atr_fixed_mult)
+        // Take the LOWER (tighter) stop for shorts
+        active_sl    := math.min(trail_stop_s, fix_stop_s)
+        active_fixed_sl := fix_stop_s
+    else
+        trail_stop_s = active_hwm * (1 + trailing_pct / 100)
+        fix_stop_s   = active_entry * (1 + fixed_stop_pct / 100)
+        active_sl    := math.min(trail_stop_s, fix_stop_s)
+        active_fixed_sl := fix_stop_s
+
+    // Breakeven: SL has moved below entry (good for short)
+    if active_sl <= active_entry and sl_state < 1
+        sl_state := 1
+
+// ============================================================================
+// PARTIAL PROFIT DETECTION - LONG
+// ============================================================================
+
+if active_direction == 1 and use_partial and not partial_taken
+    partial_price = na(entry_atr) or entry_atr <= 0 ?
+         active_entry * (1 + trailing_pct * 2 / 100) :
+         active_entry + (entry_atr * partial_target_mult)
+
+    if high >= partial_price
+        partial_taken := true
+        if show_partial_labels
+            label.new(bar_index, partial_price, "PARTIAL\n" + str.tostring(partial_sell_ratio * 100, "#") + "%",
+                 color=color.new(color.teal, 30), textcolor=color.white,
+                 style=label.style_label_down, size=size.tiny)
+
+// ============================================================================
+// PARTIAL PROFIT DETECTION - SHORT (inverse)
+// ============================================================================
+
+if active_direction == -1 and use_partial and not partial_taken
+    partial_price_s = na(entry_atr) or entry_atr <= 0 ?
+         active_entry * (1 - trailing_pct * 2 / 100) :
+         active_entry - (entry_atr * partial_target_mult)
+
+    if low <= partial_price_s
+        partial_taken := true
+        if show_partial_labels
+            label.new(bar_index, partial_price_s, "PARTIAL\n" + str.tostring(partial_sell_ratio * 100, "#") + "%",
+                 color=color.new(color.teal, 30), textcolor=color.white,
+                 style=label.style_label_up, size=size.tiny)
+
+// ============================================================================
+// EXIT LOGIC
+// ============================================================================
+
+var bool long_exit_signal  = false
+var bool short_exit_signal = false
+long_exit_signal  := false
+short_exit_signal := false
+
+// Long exit: price drops to or below SL
+if active_direction == 1
+    if low <= active_sl
+        long_exit_signal := true
+        active_direction := 0
+        active_entry := na
+        active_hwm := na
+        entry_atr := na
+        bars_in_trade := 0
+        sl_state := 0
+        partial_taken := false
+        long_drop_detected := false
+
+// Short exit: price rises to or above SL
+if active_direction == -1
+    if high >= active_sl
+        short_exit_signal := true
+        active_direction := 0
+        active_entry := na
+        active_hwm := na
+        entry_atr := na
+        bars_in_trade := 0
+        sl_state := 0
+        partial_taken := false
+        short_pump_detected := false
+
+// ============================================================================
+// NEW LONG ENTRIES
+// ============================================================================
+
+if long_entry_signal and active_direction == 0
+    active_entry := close
+    active_hwm   := close
+    entry_atr    := atr
+    partial_taken := false
+    active_direction := 1
+    bars_in_trade := 0
+    sl_state := 0
+    long_drop_detected := false
+    array.clear(long_win_close)
+    array.clear(long_win_change)
+    array.clear(long_win_vol)
+
+    if not na(entry_atr) and entry_atr > 0
+        active_sl       := close - (entry_atr * atr_fixed_mult)
+        active_fixed_sl := active_sl
+        active_partial  := close + (entry_atr * partial_target_mult)
+    else
+        active_sl       := close * (1 - fixed_stop_pct / 100)
+        active_fixed_sl := active_sl
+        active_partial  := close * (1 + trailing_pct * 2 / 100)
+
+    if show_tp_sl_lines
+        line.new(bar_index, active_sl, bar_index + 30, active_sl, color=color.new(color.red, 50), width=1, style=line.style_dotted)
+        if use_partial
+            line.new(bar_index, active_partial, bar_index + 30, active_partial, color=color.new(color.green, 50), width=1, style=line.style_dotted)
+
+    if show_trade_labels
+        label_text = "LONG ENTRY\n" +
+             "Entry:   $" + str.tostring(close, "#.####") + "\n" +
+             "SL:      $" + str.tostring(active_sl, "#.####") + "\n" +
+             "Partial: $" + str.tostring(active_partial, "#.####") + "\n" +
+             "ATR:     $" + str.tostring(atr, "#.####") + "\n" +
+             "Vol:     " + str.tostring(vol_ratio, "#.#") + "x"
+        label.new(bar_index, close, label_text,
+             color=color.new(color.green, 15), textcolor=color.white,
+             style=label.style_label_up, size=size.normal)
+
+// ============================================================================
+// NEW SHORT ENTRIES
+// ============================================================================
+
+if short_entry_signal and active_direction == 0
+    active_entry := close
+    active_hwm   := close  // acts as low water mark for shorts
+    entry_atr    := atr
+    partial_taken := false
+    active_direction := -1
+    bars_in_trade := 0
+    sl_state := 0
+    short_pump_detected := false
+    array.clear(short_win_close)
+    array.clear(short_win_change)
+    array.clear(short_win_vol)
+
+    if not na(entry_atr) and entry_atr > 0
+        active_sl       := close + (entry_atr * atr_fixed_mult)
+        active_fixed_sl := active_sl
+        active_partial  := close - (entry_atr * partial_target_mult)
+    else
+        active_sl       := close * (1 + fixed_stop_pct / 100)
+        active_fixed_sl := active_sl
+        active_partial  := close * (1 - trailing_pct * 2 / 100)
+
+    if show_tp_sl_lines
+        line.new(bar_index, active_sl, bar_index + 30, active_sl, color=color.new(color.red, 50), width=1, style=line.style_dotted)
+        if use_partial
+            line.new(bar_index, active_partial, bar_index + 30, active_partial, color=color.new(color.green, 50), width=1, style=line.style_dotted)
+
+    if show_trade_labels
+        label_text_s = "SHORT ENTRY\n" +
+             "Entry:   $" + str.tostring(close, "#.####") + "\n" +
+             "SL:      $" + str.tostring(active_sl, "#.####") + "\n" +
+             "Partial: $" + str.tostring(active_partial, "#.####") + "\n" +
+             "ATR:     $" + str.tostring(atr, "#.####") + "\n" +
+             "Vol:     " + str.tostring(vol_ratio, "#.#") + "x"
+        label.new(bar_index, close, label_text_s,
+             color=color.new(color.red, 15), textcolor=color.white,
+             style=label.style_label_down, size=size.normal)
+
+// ============================================================================
+// PLOT SIGNALS
+// ============================================================================
+
+plotshape(long_entry_signal, title="Long Entry", location=location.belowbar, color=color.green, style=shape.triangleup, size=size.normal)
+plotshape(short_entry_signal, title="Short Entry", location=location.abovebar, color=color.fuchsia, style=shape.triangledown, size=size.normal)
+
+plotshape(long_exit_signal, title="Long Exit", location=location.abovebar, color=color.red, style=shape.xcross, size=size.small)
+plotshape(short_exit_signal, title="Short Exit", location=location.belowbar, color=color.red, style=shape.xcross, size=size.small)
+
+// Pattern detection background hints
+is_watching_rise    = long_drop_detected and active_direction == 0
+is_watching_decline = short_pump_detected and active_direction == 0
+bgcolor(is_watching_rise ? color.new(color.yellow, 92) : is_watching_decline ? color.new(color.purple, 92) : na, title="Watching for Pattern")
+
+// MTF filter background
+mtf_above = close > daily_ema
+bgcolor(mtf_above ? color.new(color.green, 95) : color.new(color.red, 95), title="Daily EMA Filter")
+
+// Dynamic SL Line
+dynamic_sl_val = show_dynamic_sl and active_direction != 0 ? active_sl : na
+dynamic_sl_color = sl_state >= 1 ? color.green : color.red
+plot(dynamic_sl_val, title="Dynamic SL", color=dynamic_sl_color, style=plot.style_stepline, linewidth=2)
+
+// ============================================================================
+// DASHBOARD
+// ============================================================================
+
+risk_dollars = account_equity * 0.01
+sl_dist_dash = atr * atr_fixed_mult
+position_units = sl_dist_dash > 0 ? risk_dollars / sl_dist_dash : 0.0
+
+var table info = table.new(position.top_right, 2, 9, bgcolor=color.new(color.black, 80))
+if barstate.islast
+    table.cell(info, 0, 0, "Strategy", text_color=color.white)
+    table.cell(info, 1, 0, "V8 Fast L+S", text_color=color.blue)
+
+    table.cell(info, 0, 1, "Daily EMA", text_color=color.white)
+    table.cell(info, 1, 1, close > daily_ema ? "ABOVE" : "BELOW", text_color=close > daily_ema ? color.green : color.red)
+
+    table.cell(info, 0, 2, "Drop (Long)", text_color=color.white)
+    table.cell(info, 1, 2, long_drop_detected ? "DETECTED (" + str.tostring(math.abs(drop_pct), "#.#") + "%)" : "NONE", text_color=long_drop_detected ? color.yellow : color.gray)
+
+    table.cell(info, 0, 3, "Pump (Short)", text_color=color.white)
+    table.cell(info, 1, 3, short_pump_detected ? "DETECTED (" + str.tostring(pump_pct, "#.#") + "%)" : "NONE", text_color=short_pump_detected ? color.yellow : color.gray)
+
+    table.cell(info, 0, 4, "Position", text_color=color.white)
+    pos_text = active_direction == 1 ? "LONG" : active_direction == -1 ? "SHORT" : "FLAT"
+    if active_direction != 0
+        pos_text := pos_text + " (" + str.tostring(bars_in_trade) + " bars)"
+    table.cell(info, 1, 4, pos_text, text_color=active_direction == 1 ? color.green : active_direction == -1 ? color.red : color.gray)
+
+    table.cell(info, 0, 5, "Rise Window", text_color=color.white)
+    long_win_size = array.size(long_win_close)
+    table.cell(info, 1, 5, str.tostring(long_win_size) + "/" + str.tostring(rise_window), text_color=long_win_size > 0 ? color.yellow : color.gray)
+
+    table.cell(info, 0, 6, "Decline Window", text_color=color.white)
+    short_win_size = array.size(short_win_close)
+    table.cell(info, 1, 6, str.tostring(short_win_size) + "/" + str.tostring(rise_window), text_color=short_win_size > 0 ? color.yellow : color.gray)
+
+    table.cell(info, 0, 7, "SL Dist / Vol", text_color=color.white)
+    table.cell(info, 1, 7, "$" + str.tostring(sl_dist_dash, "#.##") + " | " + str.tostring(vol_ratio, "#.#") + "x", text_color=high_volume ? color.green : color.white)
+
+    table.cell(info, 0, 8, "Sizing", text_color=color.white)
+    table.cell(info, 1, 8, "$" + str.tostring(risk_dollars, "#.##") + " | " + str.tostring(position_units, "#.#") + " units", text_color=color.white)
+
+// ============================================================================
+// ALERTS
+// ============================================================================
+
+alertcondition(long_drop_trigger, "V8F Drop Detected", "V8 Fast: Drop detected - watching for rounded bottom (long)")
+alertcondition(short_pump_trigger, "V8F Pump Detected", "V8 Fast: Pump detected - watching for rounded top (short)")
+alertcondition(long_entry_signal, "V8F Long Entry", "V8 Fast: Rounded bottom long entry confirmed")
+alertcondition(short_entry_signal, "V8F Short Entry", "V8 Fast: Rounded top short entry confirmed")
+alertcondition(long_exit_signal, "V8F Long Exit", "V8 Fast: Long stop hit - position closed")
+alertcondition(short_exit_signal, "V8F Short Exit", "V8 Fast: Short stop hit - position closed")
