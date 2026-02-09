@@ -719,12 +719,12 @@ def create_v17_objective(metric: str = "expectancy", start_date: str = None, end
 def create_v18_objective(metric: str = "final_value", start_date: str = None, end_date: str = None):
     """
     Create objective function for v18 (Donchian Channel Breakout).
-    Only 2 optimizable params — 285 total combinations.
+    Only 2 optimizable params — 405 total combinations.
     """
     def objective(trial: optuna.Trial) -> float:
         params = {
             "channel_period": trial.suggest_int("channel_period", 12, 96, step=6),
-            "atr_trail_mult": trial.suggest_float("atr_trail_mult", 1.5, 6.0, step=0.25),
+            "atr_trail_mult": trial.suggest_float("atr_trail_mult", 1.5, 8.0, step=0.25),
         }
 
         try:

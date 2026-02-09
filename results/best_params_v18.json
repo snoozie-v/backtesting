@@ -1,18 +1,18 @@
 {
   "params": {
-    "channel_period": 90,
-    "atr_trail_mult": 6.0
+    "channel_period": 78,
+    "atr_trail_mult": 6.25
   },
   "metrics": {
-    "optimizer_score": 26083.384857722052,
-    "final_value": 26083.384857722052,
-    "total_return_pct": 160.83384857722052,
+    "optimizer_score": 39390.18776652593,
+    "final_value": 39390.18776652593,
+    "total_return_pct": 293.90187766525935,
     "total_trades": 260,
     "trades_per_day": null,
-    "win_rate_pct": 39.61538461538461,
-    "max_drawdown_pct": 85.43574138633512,
+    "win_rate_pct": 38.46153846153847,
+    "max_drawdown_pct": 82.71894553960712,
     "sharpe_ratio": 0
   },
-  "trial_number": 29,
-  "timestamp": "2026-02-08T07:11:32.089963"
+  "trial_number": 286,
+  "timestamp": "2026-02-08T20:36:41.306470"
 }

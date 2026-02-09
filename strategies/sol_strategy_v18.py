@@ -27,8 +27,8 @@ import backtrader.indicators as btind
 class SolStrategyV18(bt.Strategy):
     params = (
         # Optimizable (2 only)
-        ('channel_period', 90),    # 1H bars lookback (~3.75 days)
-        ('atr_trail_mult', 6.0),   # ATR trailing stop multiplier
+        ('channel_period', 78),    # 1H bars lookback (~3.25 days)
+        ('atr_trail_mult', 6.25),  # ATR trailing stop multiplier
         # Fixed
         ('atr_period', 14),        # ATR calc period on 1H
     )

@@ -373,6 +373,7 @@ def run_walk_forward(
     n_trials: int = 50,
     metric: str = "final_value",
     verbose: bool = True,
+    params_override: dict = None,
 ):
     """
     Run walk-forward validation: optimize on train period, test on unseen data.
@@ -384,6 +385,7 @@ def run_walk_forward(
         n_trials: Number of optimization trials for training phase
         metric: Optimization metric
         verbose: Whether to print progress
+        params_override: If provided, skip optimization and use these params directly
 
     Returns:
         Tuple of (in_sample_result, out_of_sample_result)
@@ -407,26 +409,34 @@ def run_walk_forward(
         print(f"Train period ({train_pct}%): {df.index.min().date()} to {train_end} ({split_idx} bars)")
         print(f"Test period ({100 - train_pct}%): {test_start} to {df.index.max().date()} ({total_rows - split_idx} bars)")
 
-    # Phase 1: Optimize on training data
-    if verbose:
-        print(f"\n--- Phase 1: Optimizing on training data ({n_trials} trials) ---")
+    if params_override:
+        # Skip optimization, use provided params directly
+        best_params = params_override
+        if verbose:
+            print(f"\n--- Skipping optimization, using provided params ---")
+            for k, v in sorted(best_params.items()):
+                print(f"  {k}: {v}")
+    else:
+        # Phase 1: Optimize on training data
+        if verbose:
+            print(f"\n--- Phase 1: Optimizing on training data ({n_trials} trials) ---")
 
-    # Map strategy names to their optimizer base name
-    optimizer_strategy = strategy_name.split("_sol")[0].split("_vet")[0].split("_baseline")[0].split("_universal")[0]
+        # Map strategy names to their optimizer base name
+        optimizer_strategy = strategy_name.split("_sol")[0].split("_vet")[0].split("_baseline")[0].split("_universal")[0]
 
-    study = optimize(
-        strategy=optimizer_strategy,
-        n_trials=n_trials,
-        metric=metric,
-        start_date=str(df.index.min().date()),
-        end_date=train_end,
-    )
+        study = optimize(
+            strategy=optimizer_strategy,
+            n_trials=n_trials,
+            metric=metric,
+            start_date=str(df.index.min().date()),
+            end_date=train_end,
+        )
 
-    best_params = study.best_trial.params
-    if verbose:
-        print(f"\nBest training params (Trial #{study.best_trial.number}):")
-        for k, v in sorted(best_params.items()):
-            print(f"  {k}: {v}")
+        best_params = study.best_trial.params
+        if verbose:
+            print(f"\nBest training params (Trial #{study.best_trial.number}):")
+            for k, v in sorted(best_params.items()):
+                print(f"  {k}: {v}")
 
     # Phase 2: Run in-sample with best params
     if verbose:
@@ -656,6 +666,11 @@ Examples:
         help="Run walk-forward validation (train/test split)"
     )
     parser.add_argument(
+        "--params",
+        type=str,
+        help="Override params for walk-forward (e.g., 'channel_period=78,atr_trail_mult=6.25')"
+    )
+    parser.add_argument(
         "--train-pct",
         type=int,
         default=70,
@@ -720,6 +735,18 @@ Examples:
 
     # Handle walk-forward validation
     if args.walk_forward:
+        # Parse --params if provided
+        params_override = None
+        if args.params:
+            params_override = {}
+            for pair in args.params.split(","):
+                k, v = pair.strip().split("=")
+                # Auto-detect type: int or float
+                try:
+                    params_override[k] = int(v)
+                except ValueError:
+                    params_override[k] = float(v)
+
         run_walk_forward(
             strategy_name=args.strategy,
             data_source=args.data,
@@ -727,6 +754,7 @@ Examples:
             n_trials=args.trials,
             metric=args.metric,
             verbose=not args.quiet,
+            params_override=params_override,
         )
         return 0
 
