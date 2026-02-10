@@ -15,7 +15,7 @@ Test methodology: 70% train / 30% test split on SOL 15m data (2021-01-01 to 2026
 | Strategy | IS Return | OOS Return | Retained | Trades (IS/OOS) | Assessment |
 |----------|-----------|------------|----------|-----------------|------------|
 | **v8_fast** | **+625%** | **+465%** | **74%** | **35 / 20** | **GOOD** |
-| **v11** | **+14%** | **+5%** | **34%** | **161 / 18** | **FAIR** |
+| **v11** | **+14%** | **+5%** | **34%** | **161 / 18** | **FAIR (NOT USED — see below)** |
 | v13 | +1068% | +136% | 13% | 372 / 194 | POOR |
 | v8 | +506% | -1% | 0% | 10 / 3 | FAIL |
 | v9 | +169% | +0% | 0% | 57 / 0 | FAIL |
@@ -27,7 +27,9 @@ Test methodology: 70% train / 30% test split on SOL 15m data (2021-01-01 to 2026
 | v12 | N/A | N/A | N/A | N/A | DELETED (negative expectancy) |
 | v6, v7 | — | — | — | — | No optimizer objective |
 
-**Only v8_fast and v11 are validated for out-of-sample use.**
+**Only v8_fast is validated and used for live trading.** v11 passed walk-forward but is
+not used due to fixed R:R ratios (3:1/3.5:1) and non-adaptive exits — the same class of
+problem that caused v8 to fail vs v8_fast.
 
 ---
 
@@ -52,11 +54,17 @@ continuation with ATR-based trailing stops and partial profit-taking.
 5. **Key params that matter:** `drop_window`, `min_drop_pct`, `atr_trailing_mult` are the
    drivers. These define the pattern shape and adaptive exit — not brittle thresholds.
 
-**What v11 does right (FAIR):**
+**What v11 does right (FAIR — but NOT USED):**
 - Consistent win rate across regimes (27% IS and OOS — stable edge)
 - Very low OOS drawdown (4.65%)
 - Uses position sizing limits (`max_position_pct: 25%`) rather than all-in
 - Relies on larger winners to offset frequent small losses (positive skew)
+
+**Why v11 is not used despite passing walk-forward:** The strategy uses fixed 3:1 and 3.5:1
+risk/reward ratios with fixed take-profit levels (previous 4H high/low). This means exits
+are not adaptive to volatility — the same problem that killed v8 vs v8_fast. The low OOS
+return (+5%) reflects this limitation. The position sizing discipline is worth studying,
+but the strategy itself should not be traded or have a Pine script created for it.
 
 ---
 

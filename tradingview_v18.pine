@@ -34,7 +34,8 @@ show_trail_stop   = input.bool(true, "Show Trailing Stop Line")
 show_trade_labels = input.bool(true, "Show Trade Plan Labels")
 show_exit_labels  = input.bool(true, "Show Exit Labels")
 
-// Regime Filter (defaults from backtest regime comparison)
+// Regime Filter (defaults from multi-asset backtest: SOL+BTC+ETH, 839 trades)
+// v18 works when volatility is high, regardless of trend direction
 use_regime_filter      = input.bool(true,  "Enable Regime Filter")
 allow_uptrend_high     = input.bool(true,  "Allow: Uptrend + High Vol")
 allow_uptrend_normal   = input.bool(false, "Allow: Uptrend + Normal Vol")
@@ -43,7 +44,7 @@ allow_downtrend_high   = input.bool(true,  "Allow: Downtrend + High Vol")
 allow_downtrend_normal = input.bool(false, "Allow: Downtrend + Normal Vol")
 allow_downtrend_low    = input.bool(false, "Allow: Downtrend + Low Vol")
 allow_ranging_high     = input.bool(true,  "Allow: Ranging + High Vol")
-allow_ranging_normal   = input.bool(true,  "Allow: Ranging + Normal Vol")
+allow_ranging_normal   = input.bool(false, "Allow: Ranging + Normal Vol")
 allow_ranging_low      = input.bool(false, "Allow: Ranging + Low Vol")
 
 // ============================================================================

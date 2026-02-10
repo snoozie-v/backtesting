@@ -1,0 +1,116 @@
+//@version=6
+indicator("Strategy Rotation — Regime-Based", overlay=true)
+
+// ============================================================================
+// STRATEGY ROTATION INDICATOR
+// ============================================================================
+// Lightweight indicator that classifies the current market regime and
+// recommends which strategy to follow: v8_fast, v18, or cash.
+//
+// Based on regime comparison backtest results:
+//   Uptrend regimes    → v8_fast (drop-recovery pattern works best)
+//   Ranging regimes    → v18 (Donchian breakout captures mean reversion)
+//   Downtrend regimes  → cash (both strategies lose money)
+//
+// Run this alongside the v8_fast and v18 indicator scripts.
+// Only act on signals from the recommended strategy.
+
+// ============================================================================
+// REGIME CLASSIFICATION (matches regime.py and v18 Pine)
+// ============================================================================
+
+// Trend: daily EMA(21) slope over 5 bars + price vs EMA
+daily_ema   = request.security(syminfo.tickerid, "1D", ta.ema(close, 21))
+daily_close = request.security(syminfo.tickerid, "1D", close)
+ema_slope   = daily_ema[5] > 0 ? (daily_ema - daily_ema[5]) / daily_ema[5] * 100 : 0.0
+
+regime_trend = ema_slope > 0 and daily_close > daily_ema ? "uptrend" :
+               ema_slope < 0 and daily_close < daily_ema ? "downtrend" : "ranging"
+
+// Volatility: 4H ATR(14) percentile rank over 90 bars
+atr_4h       = request.security(syminfo.tickerid, "240", ta.atr(14))
+atr_pct_rank = ta.percentrank(atr_4h, 90)
+
+regime_vol = atr_pct_rank > 75 ? "high_vol" : atr_pct_rank < 25 ? "low_vol" : "normal_vol"
+
+regime_label = regime_trend + "_" + regime_vol
+
+// ============================================================================
+// STRATEGY RECOMMENDATION (from multi-asset backtest: SOL+BTC+ETH, 839 trades)
+// ============================================================================
+// Key finding: v18 works in ALL high_vol regimes regardless of trend direction.
+// v8_fast works in uptrend regimes (SOL-only data, 18 trades).
+//
+// HIGH VOL regimes (v18 profitable across 3 assets):
+//   uptrend_high_vol    → v8_fast  (57% WR on SOL) / v18 also works (51% WR multi-asset)
+//   downtrend_high_vol  → v18      (50% WR, positive avg across SOL/BTC/ETH)
+//   ranging_high_vol    → v18      (50% WR, positive avg across SOL/BTC/ETH)
+//
+// NORMAL/LOW VOL regimes (both strategies lose):
+//   uptrend_normal_vol  → v8_fast  (67% WR on SOL, but only 3 trades)
+//   all other normal/low → cash    (consistently negative across all assets)
+
+var string active_strategy = "cash"
+if regime_vol == "high_vol"
+    if regime_trend == "uptrend"
+        active_strategy := "v8_fast"
+    else
+        active_strategy := "v18"
+else if regime_trend == "uptrend" and regime_vol == "normal_vol"
+    active_strategy := "v8_fast"
+else
+    active_strategy := "cash"
+
+// ============================================================================
+// VISUALS
+// ============================================================================
+
+// Background color by recommended strategy
+var color bg = na
+if active_strategy == "v8_fast"
+    bg := color.new(color.blue, 92)
+else if active_strategy == "v18"
+    bg := color.new(color.teal, 92)
+else
+    bg := color.new(color.gray, 95)
+bgcolor(bg, title="Strategy Background")
+
+// Strategy change detection
+strategy_changed = active_strategy != active_strategy[1]
+
+// Label on strategy change
+if strategy_changed and not na(active_strategy[1])
+    lbl_color = active_strategy == "v8_fast" ? color.new(color.blue, 15) :
+                active_strategy == "v18" ? color.new(color.teal, 15) :
+                color.new(color.gray, 30)
+    label.new(bar_index, high, active_strategy + "\n" + regime_label,
+              color=lbl_color, textcolor=color.white,
+              style=label.style_label_down, size=size.small)
+
+// ============================================================================
+// DASHBOARD
+// ============================================================================
+
+var table info = table.new(position.top_left, 2, 4, bgcolor=color.new(color.black, 80))
+if barstate.islast
+    table.cell(info, 0, 0, "Regime", text_color=color.white)
+    regime_color = regime_trend == "uptrend" ? color.green : regime_trend == "downtrend" ? color.red : color.gray
+    table.cell(info, 1, 0, regime_label, text_color=regime_color)
+
+    table.cell(info, 0, 1, "EMA Slope", text_color=color.white)
+    slope_color = ema_slope > 0 ? color.green : ema_slope < 0 ? color.red : color.gray
+    table.cell(info, 1, 1, str.tostring(ema_slope, "#.##") + "%", text_color=slope_color)
+
+    table.cell(info, 0, 2, "ATR %Rank", text_color=color.white)
+    table.cell(info, 1, 2, str.tostring(atr_pct_rank, "#.#"), text_color=color.white)
+
+    table.cell(info, 0, 3, "USE", text_color=color.white)
+    strat_color = active_strategy == "v8_fast" ? color.blue : active_strategy == "v18" ? color.teal : color.gray
+    table.cell(info, 1, 3, active_strategy, text_color=strat_color, text_size=size.large)
+
+// ============================================================================
+// ALERTS
+// ============================================================================
+alertcondition(strategy_changed and active_strategy == "v8_fast", title="Switch to v8_fast", message="Regime rotation: switch to v8_fast (" + regime_label + ")")
+alertcondition(strategy_changed and active_strategy == "v18", title="Switch to v18", message="Regime rotation: switch to v18 (" + regime_label + ")")
+alertcondition(strategy_changed and active_strategy == "cash", title="Go to cash", message="Regime rotation: go to cash (" + regime_label + ")")

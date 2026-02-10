@@ -72,7 +72,7 @@ Strategies live in `strategies/` and follow a versioned naming pattern. All are 
 
 **Walk-forward validated strategies (only these are trustworthy):**
 - V8 Fast — GOOD (74% OOS retention, ATR-based exits, pattern entries, partial profits)
-- V11 — FAIR (34% OOS retention, consistent win rate, low drawdown, position sizing limits)
+- V11 — FAIR but NOT USED (34% OOS retention, but fixed R:R ratios make exits non-adaptive)
 
 **Remaining strategies (failed walk-forward, kept for reference):**
 - V3, V6, V7 — legacy, no optimizer objectives
