@@ -61,10 +61,16 @@ cerebro.run(runonce=False)  # Required for multi-TF stability
 # Resampling: bar2edge=True, rightedge=True
 ```
 
-### Risk Management Defaults
-- Broker cash: $10,000
-- Commission: 0.1%
-- Position sizing: 98% of available cash per entry
+### Risk Management Model (R-Based, Leveraged)
+- **Leverage**: 100x on crypto perpetuals (BTC, SOL, ETH)
+- **Risk per trade**: 3% of account at the stop loss
+- **Position sizing**: `risk_amount / stop_distance` (not cash-based)
+- **Partial exits**: 30% at 1R, 30% at 2R, 30% at 3R, 10% runner with ATR trail
+- **Stop ratcheting**: Breakeven at 1R, +1R at 2R, +2R at 3R
+- **1R definition**: Strategy-specific (e.g., ATR * multiplier)
+- **Commission**: 0.1% on notional value
+- **Starting cash**: $10,000 (reference amount — position sizes are risk-based)
+- **Shared module**: `risk_manager.py` provides `RiskManager` class used by all strategies
 
 ## Strategy Structure
 
@@ -91,4 +97,10 @@ Each strategy class:
 - Implements `next()` for bar-by-bar logic
 - Uses `notify_order()` and `notify_trade()` for execution tracking
 
-**IMPORTANT: Before creating or modifying strategies, read `strategies/STRATEGY_NOTES.md`** — it documents walk-forward results for every strategy, why past strategies failed, design principles that work vs don't, and lessons learned. Key takeaways: use ATR-based exits (not fixed %), use pattern-based entries (not indicator crossovers), implement partial profit-taking, keep 20-60 trades/year, and always validate with `--walk-forward`.
+**IMPORTANT: Before creating or modifying strategies, read `strategies/STRATEGY_NOTES.md`** — it documents walk-forward results for every strategy, why past strategies failed, design principles that work vs don't, and lessons learned. Key takeaways: use ATR-based exits (not fixed %), use pattern-based entries (not indicator crossovers), implement R-based partial profit-taking (30/30/30/10), risk-based position sizing (3% at stop), keep 20-60 trades/year, and always validate with `--walk-forward`.
+
+**ALL new strategies MUST use R-based risk management** via `risk_manager.py`:
+- Import `from risk_manager import RiskManager`
+- Size positions with `risk_mgr.calculate_position_size(equity, stop_distance)`
+- Exit at 1R/2R/3R with `risk_mgr.partial_schedule` and trail runner
+- Include `stop_distance` and `risk_pct` in `_entry_context` for R-multiple tracking

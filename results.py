@@ -50,6 +50,11 @@ class BacktestResult:
     buy_hold_return_pct: Optional[float] = None
     alpha_pct: Optional[float] = None  # Strategy return - buy/hold return
 
+    # R-based metrics (None for backward compat with old results)
+    avg_r_multiple: Optional[float] = None  # Average R per trade (R-expectancy)
+    best_r: Optional[float] = None          # Largest winning R-multiple
+    worst_r: Optional[float] = None         # Largest losing R-multiple (should be ~-1R)
+
     # Notes
     notes: str = ""
 
@@ -147,6 +152,17 @@ def create_result(
     if buy_hold_return_pct is not None:
         alpha_pct = total_return_pct - buy_hold_return_pct
 
+    # Calculate R-based metrics from trade journal
+    avg_r_multiple = None
+    best_r = None
+    worst_r = None
+    if trades:
+        r_values = [t.get("r_multiple") for t in trades if t.get("r_multiple") is not None]
+        if r_values:
+            avg_r_multiple = round(sum(r_values) / len(r_values), 2)
+            best_r = round(max(r_values), 2)
+            worst_r = round(min(r_values), 2)
+
     return BacktestResult(
         run_id=run_id,
         timestamp=timestamp,
@@ -168,6 +184,9 @@ def create_result(
         buy_hold_value=buy_hold_value,
         buy_hold_return_pct=buy_hold_return_pct,
         alpha_pct=alpha_pct,
+        avg_r_multiple=avg_r_multiple,
+        best_r=best_r,
+        worst_r=worst_r,
         notes=notes,
         trades=trades,
     )
@@ -210,6 +229,12 @@ def print_result(result: BacktestResult):
             print(f"  Win Rate:       {result.win_rate_pct:.1f}%")
         if result.avg_trade_pct is not None:
             print(f"  Avg Trade:      {result.avg_trade_pct:+.2f}%")
+        if result.avg_r_multiple is not None:
+            print(f"  R-Expectancy:   {result.avg_r_multiple:+.2f}R per trade")
+        if result.best_r is not None:
+            print(f"  Best Trade:     {result.best_r:+.1f}R")
+        if result.worst_r is not None:
+            print(f"  Worst Trade:    {result.worst_r:+.1f}R")
 
     print(f"\nParameters:")
     for key, value in result.params.items():
@@ -406,10 +431,17 @@ def print_trade_journal(result: BacktestResult):
     print(f"\nTRADE JOURNAL ({len(trades)} trades)")
     print("=" * 120)
 
+    # Check if R-multiples are available
+    has_r = any(t.get("r_multiple") is not None for t in trades)
+
     # Header
-    print(f"{'#':<4} {'Entry Date':<20} {'Exit Date':<20} {'Dir':<6} {'Entry':>10} {'Exit':>10} "
-          f"{'PnL%':>8} {'PnL$':>10} {'Bars':>6}  Context")
-    print("-" * 120)
+    if has_r:
+        print(f"{'#':<4} {'Entry Date':<20} {'Exit Date':<20} {'Dir':<6} {'Entry':>10} {'Exit':>10} "
+              f"{'PnL%':>8} {'R':>6} {'PnL$':>10} {'Bars':>6}  Context")
+    else:
+        print(f"{'#':<4} {'Entry Date':<20} {'Exit Date':<20} {'Dir':<6} {'Entry':>10} {'Exit':>10} "
+              f"{'PnL%':>8} {'PnL$':>10} {'Bars':>6}  Context")
+    print("-" * 130)
 
     for i, t in enumerate(trades, 1):
         entry_dt = t.get("entry_dt", "?")[:16] if t.get("entry_dt") else "?"
@@ -420,21 +452,30 @@ def print_trade_journal(result: BacktestResult):
         pnl_pct = t.get("pnl_pct", 0)
         pnl_net = t.get("pnl_net", t.get("pnl", 0))
         bars = t.get("bars_held", "?")
+        r_mult = t.get("r_multiple")
 
-        # Format context
+        # Format context (skip stop_distance/risk_pct/position_size from display — they're internal)
         ctx = t.get("market_context", {})
         ctx_parts = []
+        skip_keys = {"stop_distance", "risk_pct", "position_size"}
         for k, v in ctx.items():
+            if k in skip_keys:
+                continue
             if isinstance(v, float):
                 ctx_parts.append(f"{k}={v:.2f}")
             else:
                 ctx_parts.append(f"{k}={v}")
         ctx_str = ", ".join(ctx_parts) if ctx_parts else ""
 
-        print(f"{i:<4} {entry_dt:<20} {exit_dt:<20} {direction:<6} {entry_p:>10.2f} {exit_p:>10.2f} "
-              f"{pnl_pct:>+7.1f}% {pnl_net:>+10.2f} {str(bars):>6}  {ctx_str}")
+        if has_r:
+            r_str = f"{r_mult:>+5.1f}R" if r_mult is not None else "   N/A"
+            print(f"{i:<4} {entry_dt:<20} {exit_dt:<20} {direction:<6} {entry_p:>10.2f} {exit_p:>10.2f} "
+                  f"{pnl_pct:>+7.1f}% {r_str} {pnl_net:>+10.2f} {str(bars):>6}  {ctx_str}")
+        else:
+            print(f"{i:<4} {entry_dt:<20} {exit_dt:<20} {direction:<6} {entry_p:>10.2f} {exit_p:>10.2f} "
+                  f"{pnl_pct:>+7.1f}% {pnl_net:>+10.2f} {str(bars):>6}  {ctx_str}")
 
-    print("-" * 120)
+    print("-" * 130)
 
     # Summary stats from the trade journal
     wins = [t for t in trades if t.get("pnl", 0) > 0]
@@ -450,6 +491,21 @@ def print_trade_journal(result: BacktestResult):
     if wins and losses:
         expectancy = (len(wins)/len(trades) * avg_win) + (len(losses)/len(trades) * avg_loss)
         print(f"  Expectancy: {expectancy:+.2f}% per trade")
+
+    # R-based summary if available
+    r_values = [t.get("r_multiple") for t in trades if t.get("r_multiple") is not None]
+    if r_values:
+        avg_r = sum(r_values) / len(r_values)
+        best_r = max(r_values)
+        worst_r = min(r_values)
+        r_wins = [r for r in r_values if r > 0]
+        r_losses = [r for r in r_values if r <= 0]
+        avg_r_win = sum(r_wins) / len(r_wins) if r_wins else 0
+        avg_r_loss = sum(r_losses) / len(r_losses) if r_losses else 0
+        print(f"\n  R-Based Summary ({len(r_values)} trades with R data):")
+        print(f"  R-Expectancy: {avg_r:+.2f}R per trade")
+        print(f"  Avg Win: {avg_r_win:+.1f}R  |  Avg Loss: {avg_r_loss:+.1f}R")
+        print(f"  Best: {best_r:+.1f}R  |  Worst: {worst_r:+.1f}R")
 
     # Context analysis if available
     ctx_trades = [t for t in trades if t.get("market_context")]

@@ -111,7 +111,10 @@ def setup_cerebro_multi_tf(df, strategy_class, params, cash=None, commission=Non
     cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name='sharpe', timeframe=bt.TimeFrame.Days, annualize=True)
 
     cerebro.broker.setcash(cash or BROKER.cash)
-    cerebro.broker.setcommission(commission or BROKER.commission)
+    cerebro.broker.setcommission(
+        commission=commission or BROKER.commission,
+        leverage=BROKER.leverage,
+    )
 
     return cerebro
 
@@ -136,7 +139,10 @@ def setup_cerebro_single_tf(df, strategy_class, params, cash=None, commission=No
     cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name='sharpe', timeframe=bt.TimeFrame.Days, annualize=True)
 
     cerebro.broker.setcash(cash or BROKER.cash)
-    cerebro.broker.setcommission(commission or BROKER.commission)
+    cerebro.broker.setcommission(
+        commission=commission or BROKER.commission,
+        leverage=BROKER.leverage,
+    )
 
     return cerebro
 
@@ -282,6 +288,16 @@ def run_backtest(
                 if self._current_regime:
                     context.update(self._current_regime)
 
+                # Calculate R-multiple if stop_distance available in context
+                r_multiple = None
+                stop_dist = context.get("stop_distance")
+                if stop_dist and stop_dist > 0 and entry_price > 0:
+                    from risk_manager import RiskManager
+                    rm = RiskManager()
+                    r_multiple = rm.calculate_r_multiple(
+                        entry_price, exit_price, stop_dist, direction)
+                    r_multiple = round(r_multiple, 2)
+
                 record = {
                     "entry_dt": entry_dt,
                     "exit_dt": exit_dt,
@@ -291,6 +307,7 @@ def run_backtest(
                     "pnl": round(trade.pnl, 2),
                     "pnl_net": round(trade.pnlcomm, 2),
                     "pnl_pct": round(pnl_pct, 2),
+                    "r_multiple": r_multiple,
                     "bars_held": trade.barlen,
                     "direction": direction,
                     "market_context": context,

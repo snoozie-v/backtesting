@@ -251,27 +251,28 @@ overfit. Compare with v8_fast which uses ONE structural pattern entry — simple
 Based on walk-forward testing every strategy in this project, these are the patterns
 that separate strategies that work from those that don't:
 
-### DO (What v8_fast and v11 got right)
+### DO (What works — validated principles)
 
-1. **Use ATR-based exits.** This is the #1 predictor of walk-forward success. ATR adapts
-   to current volatility so stops and targets stay proportional to market conditions.
-   Fixed percentage stops (v8: 19%, v9: approach_pct) break when volatility regime changes.
+1. **Use R-based risk management.** Risk exactly 3% of account at the stop loss per trade.
+   Position size = risk_amount / stop_distance. This is now the standard for ALL strategies.
+   Use `risk_manager.py` RiskManager class.
 
-2. **Use pattern-based or structural entries** rather than indicator crossovers.
+2. **Use R-based partial profit-taking.** Take 30% at 1R, 30% at 2R, 30% at 3R, trail 10%
+   runner. Ratchet stop to breakeven at 1R, +1R at 2R, +2R at 3R. This locks in gains at
+   fixed R-multiples before trailing stops can close the position prematurely.
+
+3. **Use ATR-based exits.** ATR adapts to current volatility so stops and targets stay
+   proportional to market conditions. Fixed percentage stops (v8: 19%, v9: approach_pct)
+   break when volatility regime changes.
+
+4. **Use pattern-based or structural entries** rather than indicator crossovers.
    v8_fast looks for a specific price structure (large drop → gradual recovery). This
    pattern exists in all market regimes. Indicator crossovers (v14's 15m EMA cross) are
    noisy and regime-dependent.
 
-3. **Implement partial profit-taking.** v8_fast's `partial_sell_ratio` locks in gains
-   progressively. This reduces max drawdown and improves consistency across regimes.
-
-4. **Keep trade frequency moderate.** Sweet spot appears to be 20-60 trades per year.
+5. **Keep trade frequency moderate.** Sweet spot appears to be 20-60 trades per year.
    Too few (<10/year like v8, v10) = not enough data points, high variance.
    Too many (>200/year like v12, v14) = commission drag eats the edge.
-
-5. **Use position sizing limits.** v11's `max_position_pct: 25%` survived better than
-   strategies using 90-98% of capital per trade. Smaller positions = smaller drawdowns
-   = more chances to recover from losing streaks.
 
 6. **Target consistent win rate across regimes.** v11 had 27% win rate in both IS and OOS.
    A stable (even low) win rate with positive skew is more trustworthy than a high IS

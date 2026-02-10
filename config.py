@@ -17,7 +17,8 @@ class BrokerConfig:
     """Broker configuration for backtests."""
     cash: float = 10000.0
     commission: float = 0.001  # 0.1% per trade (typical crypto)
-    position_size_pct: float = 0.01  # Use 98% of available cash per entry
+    leverage: float = 100.0    # 100x leverage (crypto perps)
+    risk_per_trade_pct: float = 3.0  # Risk 3% of account at stop loss
 
 
 BROKER = BrokerConfig()
@@ -100,12 +101,10 @@ V8_FAST_SOL_PARAMS = {
     "min_drop_pct": 11.0,
     "min_rise_pct": 4.25,
     "min_up_bars_ratio": 0.4,
-    "partial_sell_ratio": 0.55,
-    "partial_target_mult": 6.0,
     "rise_window": 80,
     "trailing_pct": 7.5,
-    "use_partial_profits": False,
     "volume_confirm": False,
+    "risk_per_trade_pct": 3.0,
 }
 
 # VET-optimized params (Trial #46)
@@ -121,12 +120,10 @@ V8_FAST_VET_PARAMS = {
     "min_drop_pct": 12.5,
     "min_rise_pct": 2.5,
     "min_up_bars_ratio": 0.3,
-    "partial_sell_ratio": 0.5,
-    "partial_target_mult": 5.75,
     "rise_window": 85,
     "trailing_pct": 9.5,
-    "use_partial_profits": False,
     "volume_confirm": False,
+    "risk_per_trade_pct": 3.0,
 }
 
 # Default V8_FAST params (currently using SOL-optimized)
@@ -393,6 +390,7 @@ V18_PARAMS = {
     "channel_period": 90,      # 1H bars lookback (~3.75 days)
     "atr_trail_mult": 6.0,     # ATR trailing stop multiplier
     "atr_period": 14,          # ATR calc period on 1H (fixed)
+    "risk_per_trade_pct": 3.0, # Risk 3% of account at stop loss
 }
 
 V16_PARAMS = {
@@ -680,19 +678,12 @@ V8_FAST_TUNE_VARIATIONS = [
     # Baseline
     ("Fast Baseline", V8_FAST_OPTIMIZED_PARAMS),
 
-    # ATR multiplier variations
+    # ATR multiplier variations (affects 1R distance and runner trail)
     ("ATR trailing 2.5x", {**V8_FAST_OPTIMIZED_PARAMS, "atr_trailing_mult": 2.5}),
     ("ATR trailing 3.5x", {**V8_FAST_OPTIMIZED_PARAMS, "atr_trailing_mult": 3.5}),
     ("ATR trailing 4.0x", {**V8_FAST_OPTIMIZED_PARAMS, "atr_trailing_mult": 4.0}),
-    ("ATR fixed 1.5x", {**V8_FAST_OPTIMIZED_PARAMS, "atr_fixed_mult": 1.5}),
+    ("ATR fixed 1.5x (tighter 1R)", {**V8_FAST_OPTIMIZED_PARAMS, "atr_fixed_mult": 1.5}),
     ("ATR fixed 2.5x", {**V8_FAST_OPTIMIZED_PARAMS, "atr_fixed_mult": 2.5}),
-
-    # Partial profit variations
-    ("Partial at 3x ATR", {**V8_FAST_OPTIMIZED_PARAMS, "partial_target_mult": 3.0}),
-    ("Partial at 5x ATR", {**V8_FAST_OPTIMIZED_PARAMS, "partial_target_mult": 5.0}),
-    ("Partial 30%", {**V8_FAST_OPTIMIZED_PARAMS, "partial_sell_ratio": 0.3}),
-    ("Partial 70%", {**V8_FAST_OPTIMIZED_PARAMS, "partial_sell_ratio": 0.7}),
-    ("No partial profits", {**V8_FAST_OPTIMIZED_PARAMS, "use_partial_profits": False}),
 
     # Entry variations
     ("Smaller drop (8%)", {**V8_FAST_OPTIMIZED_PARAMS, "min_drop_pct": 8.0}),
@@ -702,24 +693,25 @@ V8_FAST_TUNE_VARIATIONS = [
     ("Longer rise window (120)", {**V8_FAST_OPTIMIZED_PARAMS, "rise_window": 120}),
     ("Higher up ratio (50%)", {**V8_FAST_OPTIMIZED_PARAMS, "min_up_bars_ratio": 0.50}),
 
+    # Risk variations
+    ("Risk 2%", {**V8_FAST_OPTIMIZED_PARAMS, "risk_per_trade_pct": 2.0}),
+    ("Risk 5%", {**V8_FAST_OPTIMIZED_PARAMS, "risk_per_trade_pct": 5.0}),
+
     # Combined variations
-    ("Tighter stops + early partial", {
+    ("Tighter 1R + tight trail", {
         **V8_FAST_OPTIMIZED_PARAMS,
         "atr_trailing_mult": 2.5,
         "atr_fixed_mult": 1.5,
-        "partial_target_mult": 3.0,
     }),
-    ("Wider stops + late partial", {
+    ("Wider 1R + wide trail", {
         **V8_FAST_OPTIMIZED_PARAMS,
         "atr_trailing_mult": 4.0,
         "atr_fixed_mult": 2.5,
-        "partial_target_mult": 5.0,
     }),
-    ("Aggressive entry + tight risk", {
+    ("Aggressive entry + tight 1R", {
         **V8_FAST_OPTIMIZED_PARAMS,
         "min_drop_pct": 8.0,
         "rise_window": 60,
-        "atr_trailing_mult": 2.5,
-        "partial_sell_ratio": 0.7,
+        "atr_fixed_mult": 1.5,
     }),
 ]
