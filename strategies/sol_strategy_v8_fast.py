@@ -221,6 +221,19 @@ class SolStrategyV8Fast(bt.Strategy):
         atr_info = f", ATR: {self.entry_atr:.4f}" if self.entry_atr else ""
         print(f"[{dt}] ENTRY @ {self.entry_price:.4f}{atr_info}")
 
+        # Snapshot market context for trade journal
+        rise_pct = 0.0
+        if len(self.rise_window_data) >= 2:
+            rise_pct = (self.rise_window_data[-1]['close'] - self.rise_window_data[0]['close']) / self.rise_window_data[0]['close'] * 100
+        daily_ema_val = self.daily_ema[0] if len(self.daily_ema) > 0 else 0
+        ema_dist_pct = ((self.entry_price - daily_ema_val) / daily_ema_val * 100) if daily_ema_val > 0 else 0
+        self._entry_context = {
+            "atr": round(self.entry_atr, 4) if self.entry_atr else 0,
+            "daily_ema_dist_pct": round(ema_dist_pct, 2),
+            "rise_pct": round(rise_pct, 2),
+            "rise_window_bars": len(self.rise_window_data),
+        }
+
         # Reset state
         self.drop_detected = False
         self.rise_window_data = []

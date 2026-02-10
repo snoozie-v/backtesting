@@ -21,8 +21,8 @@ indicator("V18 - Donchian Channel Breakout + ATR Trailing Stop", overlay=true, m
 // ============================================================================
 
 // Donchian Channel (Optimized)
-channel_period    = input.int(78,    "Channel Period (1H bars)", minval=6, step=6)
-atr_trail_mult    = input.float(6.25, "ATR Trailing Stop Multiplier", minval=1.0, step=0.25)
+channel_period    = input.int(%%channel_period%%,    "Channel Period (1H bars)", minval=6, step=6)
+atr_trail_mult    = input.float(%%atr_trail_mult%%, "ATR Trailing Stop Multiplier", minval=1.0, step=0.25)
 
 // ATR (Fixed)
 atr_period        = input.int(14,    "ATR Period")

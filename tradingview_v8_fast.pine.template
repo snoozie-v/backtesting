@@ -26,36 +26,36 @@ indicator("V8 Fast - Rounded Bottom/Top Catcher (4H Drop/Rise, ATR Stops)", over
 // ============================================================================
 
 // Drop/Pump Detection
-drop_window       = input.int(90,    "Drop/Pump Window (4H bars)", minval=10, maxval=200)
-min_drop_pct      = input.float(12.5, "Min Drop/Pump %",           step=1.0)
+drop_window       = input.int(%%drop_window%%,    "Drop/Pump Window (4H bars)", minval=10, maxval=200)
+min_drop_pct      = input.float(%%min_drop_pct%%, "Min Drop/Pump %",           step=1.0)
 
 // Rise/Decline (Recovery) Requirements
-rise_window       = input.int(85,   "Rise/Decline Window (4H bars)", minval=10, maxval=300)
-min_up_bars_ratio = input.float(0.3, "Min Directional Bars Ratio",   step=0.05, minval=0.1, maxval=0.9)
-max_single_up     = input.float(12.0,  "Max Single Up Bar %",          step=0.5)
-max_single_down   = input.float(-5.0, "Max Single Down Bar %",        step=0.5)
-min_rise_pct      = input.float(2.5,  "Min Total Move %",             step=0.5)
+rise_window       = input.int(%%rise_window%%,   "Rise/Decline Window (4H bars)", minval=10, maxval=300)
+min_up_bars_ratio = input.float(%%min_up_bars_ratio%%, "Min Directional Bars Ratio",   step=0.05, minval=0.1, maxval=0.9)
+max_single_up     = input.float(%%max_single_up%%,  "Max Single Up Bar %",          step=0.5)
+max_single_down   = input.float(%%max_single_down%%, "Max Single Down Bar %",        step=0.5)
+min_rise_pct      = input.float(%%min_rise_pct%%,  "Min Total Move %",             step=0.5)
 
 // Volume Confirmation
-use_volume        = input.bool(false, "Require Volume Confirmation")
+use_volume        = input.bool(%%use_volume%%, "Require Volume Confirmation")
 vol_sma_len       = input.int(120,    "Volume SMA Length")
 
 // Daily EMA Filter
-daily_ema_len     = input.int(4,      "Daily EMA Period")
+daily_ema_len     = input.int(%%daily_ema_len%%,      "Daily EMA Period")
 
 // ATR & Stops
-atr_period        = input.int(22,     "ATR Period")
-atr_trailing_mult = input.float(5.0,  "Trailing Stop ATR Mult", step=0.25)
-atr_fixed_mult    = input.float(2.9,  "Fixed Stop ATR Mult",    step=0.25)
+atr_period        = input.int(%%atr_period%%,     "ATR Period")
+atr_trailing_mult = input.float(%%atr_trailing_mult%%,  "Trailing Stop ATR Mult", step=0.25)
+atr_fixed_mult    = input.float(%%atr_fixed_mult%%,  "Fixed Stop ATR Mult",    step=0.25)
 
 // Fallback Fixed Stops
-trailing_pct      = input.float(9.5,  "Fallback Trailing %",    step=0.5)
-fixed_stop_pct    = input.float(6.0,  "Fallback Fixed Stop %",  step=0.5)
+trailing_pct      = input.float(%%trailing_pct%%,  "Fallback Trailing %",    step=0.5)
+fixed_stop_pct    = input.float(%%fixed_stop_pct%%,  "Fallback Fixed Stop %",  step=0.5)
 
 // Partial Profit-Taking
-use_partial       = input.bool(false,  "Enable Partial Profit")
-partial_target_mult = input.float(5.75, "Partial Target ATR Mult", step=0.25)
-partial_sell_ratio  = input.float(0.5, "Partial Sell Ratio",      step=0.1, minval=0.1, maxval=0.9)
+use_partial       = input.bool(%%use_partial%%,  "Enable Partial Profit")
+partial_target_mult = input.float(%%partial_target_mult%%, "Partial Target ATR Mult", step=0.25)
+partial_sell_ratio  = input.float(%%partial_sell_ratio%%, "Partial Sell Ratio",      step=0.1, minval=0.1, maxval=0.9)
 
 // Direction Toggles
 enable_longs      = input.bool(true,  "Enable Long Entries")

@@ -916,6 +916,11 @@ def print_results(study: optuna.Study, strategy: str):
         }, f, indent=2)
     print(f"\nBest params saved to: {params_file}")
 
+    # Check if a Pine template exists for this strategy
+    template_path = Path(f"tradingview_{strategy}.pine.template")
+    if template_path.exists():
+        print(f"\nTip: Run `python generate_pine.py {strategy}` to update the TradingView Pine script.")
+
     # Print top 5 trials
     print("\nTop 5 Trials:")
     print("-" * 60)

@@ -53,6 +53,9 @@ class BacktestResult:
     # Notes
     notes: str = ""
 
+    # Per-trade journal (None for backward compat with old JSONs)
+    trades: Optional[List[Dict[str, Any]]] = None
+
 
 def ensure_results_dir():
     """Create results directory if it doesn't exist."""
@@ -84,7 +87,10 @@ def load_result(filepath: str) -> BacktestResult:
     """Load a backtest result from JSON file."""
     with open(filepath, "r") as f:
         data = json.load(f)
-    return BacktestResult(**data)
+    # Handle old JSONs that don't have newer fields
+    valid_fields = {f.name for f in BacktestResult.__dataclass_fields__.values()}
+    filtered = {k: v for k, v in data.items() if k in valid_fields}
+    return BacktestResult(**filtered)
 
 
 def load_all_results() -> List[BacktestResult]:
@@ -119,6 +125,7 @@ def create_result(
     buy_hold_value: Optional[float] = None,
     buy_hold_return_pct: Optional[float] = None,
     notes: str = "",
+    trades: Optional[List[Dict[str, Any]]] = None,
 ) -> BacktestResult:
     """
     Create a BacktestResult with calculated metrics.
@@ -162,6 +169,7 @@ def create_result(
         buy_hold_return_pct=buy_hold_return_pct,
         alpha_pct=alpha_pct,
         notes=notes,
+        trades=trades,
     )
 
 
@@ -388,6 +396,207 @@ def compare_strategies(strategy_filter: Optional[str] = None) -> List[BacktestRe
     return results
 
 
+def print_trade_journal(result: BacktestResult):
+    """Print a formatted per-trade journal table."""
+    if not result.trades:
+        print("No per-trade data available for this run.")
+        return
+
+    trades = result.trades
+    print(f"\nTRADE JOURNAL ({len(trades)} trades)")
+    print("=" * 120)
+
+    # Header
+    print(f"{'#':<4} {'Entry Date':<20} {'Exit Date':<20} {'Dir':<6} {'Entry':>10} {'Exit':>10} "
+          f"{'PnL%':>8} {'PnL$':>10} {'Bars':>6}  Context")
+    print("-" * 120)
+
+    for i, t in enumerate(trades, 1):
+        entry_dt = t.get("entry_dt", "?")[:16] if t.get("entry_dt") else "?"
+        exit_dt = t.get("exit_dt", "?")[:16] if t.get("exit_dt") else "?"
+        direction = t.get("direction", "?").upper()
+        entry_p = t.get("entry_price", 0)
+        exit_p = t.get("exit_price", 0)
+        pnl_pct = t.get("pnl_pct", 0)
+        pnl_net = t.get("pnl_net", t.get("pnl", 0))
+        bars = t.get("bars_held", "?")
+
+        # Format context
+        ctx = t.get("market_context", {})
+        ctx_parts = []
+        for k, v in ctx.items():
+            if isinstance(v, float):
+                ctx_parts.append(f"{k}={v:.2f}")
+            else:
+                ctx_parts.append(f"{k}={v}")
+        ctx_str = ", ".join(ctx_parts) if ctx_parts else ""
+
+        print(f"{i:<4} {entry_dt:<20} {exit_dt:<20} {direction:<6} {entry_p:>10.2f} {exit_p:>10.2f} "
+              f"{pnl_pct:>+7.1f}% {pnl_net:>+10.2f} {str(bars):>6}  {ctx_str}")
+
+    print("-" * 120)
+
+    # Summary stats from the trade journal
+    wins = [t for t in trades if t.get("pnl", 0) > 0]
+    losses = [t for t in trades if t.get("pnl", 0) <= 0]
+    avg_win = sum(t.get("pnl_pct", 0) for t in wins) / len(wins) if wins else 0
+    avg_loss = sum(t.get("pnl_pct", 0) for t in losses) / len(losses) if losses else 0
+    avg_bars = sum(t.get("bars_held", 0) for t in trades if t.get("bars_held")) / len(trades) if trades else 0
+
+    print(f"\nJournal Summary:")
+    print(f"  Wins: {len(wins)}  |  Losses: {len(losses)}  |  Win Rate: {len(wins)/len(trades)*100:.1f}%")
+    print(f"  Avg Win: {avg_win:+.2f}%  |  Avg Loss: {avg_loss:+.2f}%  |  Avg Hold: {avg_bars:.0f} bars")
+
+    if wins and losses:
+        expectancy = (len(wins)/len(trades) * avg_win) + (len(losses)/len(trades) * avg_loss)
+        print(f"  Expectancy: {expectancy:+.2f}% per trade")
+
+    # Context analysis if available
+    ctx_trades = [t for t in trades if t.get("market_context")]
+    if ctx_trades:
+        print(f"\nMarket Context Analysis ({len(ctx_trades)} trades with context):")
+        # Find common context keys
+        all_keys = set()
+        for t in ctx_trades:
+            all_keys.update(t["market_context"].keys())
+
+        for key in sorted(all_keys):
+            vals_win = [t["market_context"][key] for t in ctx_trades
+                       if key in t["market_context"] and t.get("pnl", 0) > 0
+                       and isinstance(t["market_context"][key], (int, float))]
+            vals_loss = [t["market_context"][key] for t in ctx_trades
+                        if key in t["market_context"] and t.get("pnl", 0) <= 0
+                        and isinstance(t["market_context"][key], (int, float))]
+
+            if vals_win and vals_loss:
+                avg_w = sum(vals_win) / len(vals_win)
+                avg_l = sum(vals_loss) / len(vals_loss)
+                print(f"  {key}: avg(wins)={avg_w:.2f}, avg(losses)={avg_l:.2f}")
+
+    # Regime breakdown if regime data is present
+    regime_trades = [t for t in trades if t.get("market_context", {}).get("regime")]
+    if regime_trades:
+        print(f"\nRegime Breakdown ({len(regime_trades)} trades with regime data):")
+        # Group by regime
+        regime_groups = {}
+        for t in regime_trades:
+            regime = t["market_context"]["regime"]
+            if regime not in regime_groups:
+                regime_groups[regime] = []
+            regime_groups[regime].append(t)
+
+        # Sort by number of trades descending
+        for regime, group in sorted(regime_groups.items(), key=lambda x: -len(x[1])):
+            n = len(group)
+            w = sum(1 for t in group if t.get("pnl", 0) > 0)
+            l = n - w
+            wr = (w / n * 100) if n > 0 else 0
+            avg_pnl = sum(t.get("pnl_pct", 0) for t in group) / n if n > 0 else 0
+            print(f"  {regime:<25} {n:>3} trades, {w}W/{l}L ({wr:.0f}%), avg {avg_pnl:+.1f}%")
+
+    print()
+
+
+def print_regime_comparison(results: List[BacktestResult]):
+    """Print a cross-strategy regime comparison matrix.
+
+    Shows each strategy's performance broken down by regime, and recommends
+    the best strategy for each regime.
+    """
+    # Collect regime stats per strategy: {strategy: {regime: {trades, wins, total_pnl_pct}}}
+    strategy_regime_stats = {}
+    all_regimes = set()
+
+    for result in results:
+        if not result.trades:
+            continue
+        regime_trades = [t for t in result.trades if t.get("market_context", {}).get("regime")]
+        if not regime_trades:
+            continue
+
+        stats = {}
+        for t in regime_trades:
+            regime = t["market_context"]["regime"]
+            all_regimes.add(regime)
+            if regime not in stats:
+                stats[regime] = {"trades": 0, "wins": 0, "total_pnl_pct": 0.0}
+            stats[regime]["trades"] += 1
+            if t.get("pnl", 0) > 0:
+                stats[regime]["wins"] += 1
+            stats[regime]["total_pnl_pct"] += t.get("pnl_pct", 0)
+
+        strategy_regime_stats[result.strategy] = stats
+
+    if not strategy_regime_stats:
+        print("\nNo regime data available for comparison.")
+        return
+
+    strategies = sorted(strategy_regime_stats.keys())
+    regimes = sorted(all_regimes)
+
+    # Calculate total trades per regime across all strategies (for sorting)
+    regime_total_trades = {}
+    for regime in regimes:
+        regime_total_trades[regime] = sum(
+            strategy_regime_stats[s].get(regime, {}).get("trades", 0) for s in strategies
+        )
+    regimes.sort(key=lambda r: -regime_total_trades[r])
+
+    # Print header
+    print(f"\nREGIME COMPARISON ({len(strategies)} strategies)")
+    print("=" * 100)
+
+    # Column width for each strategy
+    col_w = max(18, max(len(s) + 4 for s in strategies))
+    header = f"{'Regime':<26}"
+    for s in strategies:
+        header += f"{s:>{col_w}}"
+    print(header)
+    print("-" * 100)
+
+    # Print each regime row
+    for regime in regimes:
+        row = f"  {regime:<24}"
+        for s in strategies:
+            st = strategy_regime_stats[s].get(regime)
+            if st and st["trades"] > 0:
+                n = st["trades"]
+                wr = (st["wins"] / n * 100)
+                avg_pnl = st["total_pnl_pct"] / n
+                cell = f"{n}T {wr:.0f}% {avg_pnl:+.1f}%"
+            else:
+                cell = "--"
+            row += f"{cell:>{col_w}}"
+        print(row)
+
+    print("-" * 100)
+
+    # Best strategy per regime
+    print("\nBEST STRATEGY PER REGIME:")
+    for regime in regimes:
+        best_strategy = None
+        best_avg_pnl = -float("inf")
+        best_wr = 0
+        for s in strategies:
+            st = strategy_regime_stats[s].get(regime)
+            if st and st["trades"] >= 2:  # Minimum 2 trades to qualify
+                avg_pnl = st["total_pnl_pct"] / st["trades"]
+                if avg_pnl > best_avg_pnl:
+                    best_avg_pnl = avg_pnl
+                    best_wr = (st["wins"] / st["trades"] * 100)
+                    best_strategy = s
+
+        if best_strategy:
+            marker = "*" if best_avg_pnl > 0 else " "
+            print(f" {marker} {regime:<26} -> {best_strategy:<12} ({best_wr:.0f}% WR, {best_avg_pnl:+.1f}% avg)")
+        else:
+            print(f"   {regime:<26} -> insufficient data")
+
+    print()
+    print("  * = positive expectancy regime")
+    print()
+
+
 class TradeTracker:
     """
     Helper class to track trades during a backtest.
@@ -452,6 +661,7 @@ if __name__ == "__main__":
     parser.add_argument("--strategy", "-s", help="Filter by strategy name")
     parser.add_argument("--limit", "-n", type=int, default=10, help="Number of results to show")
     parser.add_argument("--detail", "-d", help="Show detailed result for specific run ID")
+    parser.add_argument("--trades", action="store_true", help="Show per-trade journal (use with --detail)")
 
     args = parser.parse_args()
 
@@ -461,6 +671,8 @@ if __name__ == "__main__":
         found = [r for r in results if r.run_id == args.detail]
         if found:
             print_result(found[0])
+            if args.trades:
+                print_trade_journal(found[0])
         else:
             print(f"No result found with run ID: {args.detail}")
     else:

@@ -25,12 +25,15 @@ import pandas as pd
 
 import config
 from config import BROKER, DATA, get_strategy, get_params, V8_TUNE_VARIATIONS, V8_FAST_TUNE_VARIATIONS
+from regime import MarketRegime
 from results import (
     create_result,
     save_result,
     print_result,
+    print_trade_journal,
     print_comparison_table,
     print_ranked_table,
+    print_regime_comparison,
     print_walk_forward_report,
     save_comparison,
     load_all_results,
@@ -215,6 +218,86 @@ def run_backtest(
         def __init__(self):
             super().__init__()
             captured_strat.append(self)
+            self.trade_log = []
+            self._entry_context = None  # Strategies can set this at entry time
+            self._max_pos_size = 0  # Track peak position size for current trade
+            self._current_regime = {}  # Updated each bar by regime classifier
+
+            # Initialize regime classifier if multi-TF data available
+            # Need at least 5 feeds: 15m[0], 1h[1], 4h[2], weekly[3], daily[4]
+            self._regime_classifier = None
+            if len(self.datas) >= 5:
+                try:
+                    self._regime_classifier = MarketRegime(self.datas[4], self.datas[2])
+                except Exception:
+                    pass  # Skip regime if data feeds aren't compatible
+
+        def next(self):
+            super().next()
+            # Update regime classification each bar
+            if self._regime_classifier is not None:
+                try:
+                    self._current_regime = self._regime_classifier.classify()
+                except Exception:
+                    pass
+
+        def notify_order(self, order):
+            super().notify_order(order)
+            if order.status == order.Completed:
+                # Track peak position size for PnL % calculation
+                current_size = abs(self.position.size) if self.position else 0
+                if current_size > self._max_pos_size:
+                    self._max_pos_size = current_size
+
+        def notify_trade(self, trade):
+            super().notify_trade(trade)
+            if trade.isclosed:
+                # Extract entry/exit datetimes from backtrader's numeric format
+                try:
+                    entry_dt = bt.num2date(trade.dtopen).strftime("%Y-%m-%d %H:%M")
+                except Exception:
+                    entry_dt = str(trade.dtopen)
+                try:
+                    exit_dt = bt.num2date(trade.dtclose).strftime("%Y-%m-%d %H:%M")
+                except Exception:
+                    exit_dt = str(trade.dtclose)
+
+                entry_price = trade.price
+                # Use tracked max position size (handles partials correctly)
+                max_size = self._max_pos_size if self._max_pos_size > 0 else 1
+                # Calculate effective exit price and PnL %
+                if entry_price > 0:
+                    exit_price = entry_price + (trade.pnl / max_size)
+                    initial_value = entry_price * max_size
+                    pnl_pct = (trade.pnl / initial_value) * 100
+                else:
+                    exit_price = entry_price
+                    pnl_pct = 0.0
+
+                # Determine direction from trade history
+                direction = "long" if trade.long else "short"
+
+                # Merge strategy-specific context with regime classification
+                context = self._entry_context or {}
+                if self._current_regime:
+                    context.update(self._current_regime)
+
+                record = {
+                    "entry_dt": entry_dt,
+                    "exit_dt": exit_dt,
+                    "entry_price": round(entry_price, 4),
+                    "exit_price": round(exit_price, 4),
+                    "size": round(max_size, 6),
+                    "pnl": round(trade.pnl, 2),
+                    "pnl_net": round(trade.pnlcomm, 2),
+                    "pnl_pct": round(pnl_pct, 2),
+                    "bars_held": trade.barlen,
+                    "direction": direction,
+                    "market_context": context,
+                }
+                self.trade_log.append(record)
+                self._entry_context = None  # Reset for next trade
+                self._max_pos_size = 0  # Reset for next trade
 
     # Set up cerebro with wrapper
     if is_single_tf:
@@ -294,6 +377,11 @@ def run_backtest(
             print(f"Buy & Hold: ${buy_hold_value:,.2f} ({buy_hold_return_pct:+.2f}%)")
             print(f"Alpha: {alpha:+.2f}%")
 
+    # Extract per-trade journal from wrapper
+    trade_log = None
+    if strat is not None and hasattr(strat, 'trade_log') and strat.trade_log:
+        trade_log = strat.trade_log
+
     # Create result
     result = create_result(
         strategy=strategy_name,
@@ -311,6 +399,7 @@ def run_backtest(
         buy_hold_value=buy_hold_value,
         buy_hold_return_pct=buy_hold_return_pct,
         notes=notes,
+        trades=trade_log,
     )
 
     # Save result
@@ -627,6 +716,11 @@ Examples:
         metavar="RUN_ID",
         help="Show detailed result for a specific run ID"
     )
+    parser.add_argument(
+        "--trades",
+        action="store_true",
+        help="Show per-trade journal (use with --detail or after a backtest run)"
+    )
 
     # Output control
     parser.add_argument(
@@ -684,6 +778,11 @@ Examples:
         help="Compare all primary strategies head-to-head on same data"
     )
     parser.add_argument(
+        "--compare-regimes",
+        action="store_true",
+        help="Compare strategies by market regime (shows best strategy per regime)"
+    )
+    parser.add_argument(
         "--strategies",
         type=str,
         default=None,
@@ -728,6 +827,8 @@ Examples:
         found = [r for r in results if r.run_id == args.detail]
         if found:
             print_result(found[0])
+            if args.trades:
+                print_trade_journal(found[0])
         else:
             print(f"No result found with run ID: {args.detail}")
             return 1
@@ -772,6 +873,22 @@ Examples:
         )
         return 0
 
+    # Handle regime comparison
+    if args.compare_regimes:
+        strategy_list = None
+        if args.strategies:
+            strategy_list = [s.strip() for s in args.strategies.split(",")]
+        results = run_compare_all(
+            strategies=strategy_list,
+            data_source=args.data,
+            start_date=args.start_date,
+            end_date=args.end_date,
+            verbose=not args.quiet,
+        )
+        if results:
+            print_regime_comparison(results)
+        return 0
+
     # Handle tuning mode
     if args.tune or args.command == "tune":
         run_tune(args.strategy, verbose=not args.quiet)
@@ -811,6 +928,8 @@ Examples:
 
     if not args.quiet:
         print_result(result)
+        if args.trades:
+            print_trade_journal(result)
 
     return 0
 

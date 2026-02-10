@@ -117,6 +117,15 @@ class SolStrategyV18(bt.Strategy):
         print(f"[{dt}] LONG @ {price:.2f} | "
               f"Trail: {trail_stop:.2f} | ATR: {atr:.2f} | Size: {size:.4f}")
 
+        # Snapshot market context for trade journal
+        ch_width = self.channel_high[0] - self.channel_low[0]
+        ch_width_pct = (ch_width / price * 100) if price > 0 else 0
+        self._entry_context = {
+            "atr": round(atr, 4),
+            "channel_width_pct": round(ch_width_pct, 2),
+            "direction": "long",
+        }
+
     def _enter_short(self, price, atr):
         """Enter short position."""
         cash = self.broker.get_cash()
@@ -135,6 +144,15 @@ class SolStrategyV18(bt.Strategy):
         dt = self.data15.datetime.datetime(0)
         print(f"[{dt}] SHORT @ {price:.2f} | "
               f"Trail: {trail_stop:.2f} | ATR: {atr:.2f} | Size: {size:.4f}")
+
+        # Snapshot market context for trade journal
+        ch_width = self.channel_high[0] - self.channel_low[0]
+        ch_width_pct = (ch_width / price * 100) if price > 0 else 0
+        self._entry_context = {
+            "atr": round(atr, 4),
+            "channel_width_pct": round(ch_width_pct, 2),
+            "direction": "short",
+        }
 
     def _check_exits(self):
         """Check ATR trailing stop on every 15m bar."""

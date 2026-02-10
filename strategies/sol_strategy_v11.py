@@ -270,6 +270,15 @@ class SolStrategyV11(bt.Strategy):
               f"TP: {self.take_profit:.2f} ({reward_pct:.1f}%) | "
               f"R:R {params['rr_ratio']:.1f}")
 
+        # Snapshot market context for trade journal
+        prev_range_pct = (candle_range / price * 100) if price > 0 else 0
+        self._entry_context = {
+            "market_state": self.market_state,
+            "trade_mode": self.trade_mode,
+            "prev_4h_range_pct": round(prev_range_pct, 2),
+            "rr_ratio": params['rr_ratio'],
+        }
+
     def _enter_short(self, price, candle_range):
         """Enter short position with calculated TP/SL levels."""
         params = self._get_params_for_mode()
@@ -305,6 +314,15 @@ class SolStrategyV11(bt.Strategy):
               f"SL: {self.stop_loss:.2f} ({risk_pct:.1f}%) | "
               f"TP: {self.take_profit:.2f} ({reward_pct:.1f}%) | "
               f"R:R {params['rr_ratio']:.1f}")
+
+        # Snapshot market context for trade journal
+        prev_range_pct = (candle_range / price * 100) if price > 0 else 0
+        self._entry_context = {
+            "market_state": self.market_state,
+            "trade_mode": self.trade_mode,
+            "prev_4h_range_pct": round(prev_range_pct, 2),
+            "rr_ratio": params['rr_ratio'],
+        }
 
     def _check_exits(self):
         """Check for stop loss and take profit exits."""
