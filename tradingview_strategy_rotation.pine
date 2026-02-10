@@ -80,9 +80,13 @@ strategy_changed = active_strategy != active_strategy[1]
 
 // Label on strategy change
 if strategy_changed and not na(active_strategy[1])
-    lbl_color = active_strategy == "v8_fast" ? color.new(color.blue, 15) :
-                active_strategy == "v18" ? color.new(color.teal, 15) :
-                color.new(color.gray, 30)
+    var color lbl_color = color.gray
+    if active_strategy == "v8_fast"
+        lbl_color := color.new(color.blue, 15)
+    else if active_strategy == "v18"
+        lbl_color := color.new(color.teal, 15)
+    else
+        lbl_color := color.new(color.gray, 30)
     label.new(bar_index, high, active_strategy + "\n" + regime_label,
               color=lbl_color, textcolor=color.white,
               style=label.style_label_down, size=size.small)
@@ -91,26 +95,20 @@ if strategy_changed and not na(active_strategy[1])
 // DASHBOARD
 // ============================================================================
 
-var table info = table.new(position.top_left, 2, 4, bgcolor=color.new(color.black, 80))
+var table info = table.new(position.bottom_right, 2, 4, bgcolor=color.new(color.black, 80))
 if barstate.islast
-    table.cell(info, 0, 0, "Regime", text_color=color.white)
+    table.cell(info, 0, 0, "Rgm", text_color=color.white)
     regime_color = regime_trend == "uptrend" ? color.green : regime_trend == "downtrend" ? color.red : color.gray
     table.cell(info, 1, 0, regime_label, text_color=regime_color)
 
-    table.cell(info, 0, 1, "EMA Slope", text_color=color.white)
+    table.cell(info, 0, 1, "EMA", text_color=color.white)
     slope_color = ema_slope > 0 ? color.green : ema_slope < 0 ? color.red : color.gray
-    table.cell(info, 1, 1, str.tostring(ema_slope, "#.##") + "%", text_color=slope_color)
+    table.cell(info, 1, 1, str.tostring(ema_slope, "#.#") + "%", text_color=slope_color)
 
-    table.cell(info, 0, 2, "ATR %Rank", text_color=color.white)
-    table.cell(info, 1, 2, str.tostring(atr_pct_rank, "#.#"), text_color=color.white)
+    table.cell(info, 0, 2, "ATR%", text_color=color.white)
+    table.cell(info, 1, 2, str.tostring(atr_pct_rank, "#"), text_color=color.white)
 
     table.cell(info, 0, 3, "USE", text_color=color.white)
     strat_color = active_strategy == "v8_fast" ? color.blue : active_strategy == "v18" ? color.teal : color.gray
     table.cell(info, 1, 3, active_strategy, text_color=strat_color, text_size=size.large)
 
-// ============================================================================
-// ALERTS
-// ============================================================================
-alertcondition(strategy_changed and active_strategy == "v8_fast", title="Switch to v8_fast", message="Regime rotation: switch to v8_fast (" + regime_label + ")")
-alertcondition(strategy_changed and active_strategy == "v18", title="Switch to v18", message="Regime rotation: switch to v18 (" + regime_label + ")")
-alertcondition(strategy_changed and active_strategy == "cash", title="Go to cash", message="Regime rotation: go to cash (" + regime_label + ")")

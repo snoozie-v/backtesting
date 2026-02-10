@@ -356,27 +356,27 @@ allowed_count = up_count + down_count + range_count
 
 var table info = table.new(position.top_right, 2, 6, bgcolor=color.new(color.black, 80))
 if barstate.islast
-    table.cell(info, 0, 0, "Position", text_color=color.white)
+    table.cell(info, 0, 0, "Pos", text_color=color.white)
     pos_text = active_direction == 1 ? "LONG" : active_direction == -1 ? "SHORT" : "FLAT"
     table.cell(info, 1, 0, pos_text, text_color=active_direction == 1 ? color.green : active_direction == -1 ? color.red : color.gray)
 
-    table.cell(info, 0, 1, "Channel", text_color=color.white)
-    table.cell(info, 1, 1, str.tostring(channel_period) + " bars ($" + str.tostring(channel_high - channel_low, "#.##") + " width)", text_color=color.white)
+    table.cell(info, 0, 1, "Ch", text_color=color.white)
+    table.cell(info, 1, 1, str.tostring(channel_period) + "b $" + str.tostring(channel_high - channel_low, "#.##"), text_color=color.white)
 
-    table.cell(info, 0, 2, "Trail Stop", text_color=color.white)
-    trail_text = active_direction != 0 ? "$" + str.tostring(active_trail_stop, "#.##") : "N/A"
+    table.cell(info, 0, 2, "Stop", text_color=color.white)
+    trail_text = active_direction != 0 ? "$" + str.tostring(active_trail_stop, "#.##") : "--"
     table.cell(info, 1, 2, trail_text, text_color=active_direction != 0 ? color.yellow : color.gray)
 
-    table.cell(info, 0, 3, "Win Rate", text_color=color.white)
+    table.cell(info, 0, 3, "W/L", text_color=color.white)
     wr_color = win_rate >= 40 ? color.green : win_rate >= 30 ? color.yellow : color.red
-    table.cell(info, 1, 3, str.tostring(winning_trades) + "W / " + str.tostring(losing_trades) + "L (" + str.tostring(win_rate, "#.#") + "%)", text_color=wr_color)
+    table.cell(info, 1, 3, str.tostring(winning_trades) + "/" + str.tostring(losing_trades) + " " + str.tostring(win_rate, "#") + "%", text_color=wr_color)
 
-    table.cell(info, 0, 4, "Regime", text_color=color.white)
+    table.cell(info, 0, 4, "Rgm", text_color=color.white)
     regime_color = regime_trend == "uptrend" ? color.green : regime_trend == "downtrend" ? color.red : color.gray
-    table.cell(info, 1, 4, regime_label + (regime_allowed ? "" : " [BLOCKED]"), text_color=regime_allowed ? regime_color : color.gray)
+    table.cell(info, 1, 4, regime_allowed ? regime_label : "BLOCKED", text_color=regime_allowed ? regime_color : color.gray)
 
-    table.cell(info, 0, 5, "Filter", text_color=color.white)
-    filter_text = use_regime_filter ? "ON (" + str.tostring(allowed_count) + "/9 allowed, " + str.tostring(blocked_trades) + " blocked)" : "OFF"
+    table.cell(info, 0, 5, "Flt", text_color=color.white)
+    filter_text = use_regime_filter ? str.tostring(allowed_count) + "/9 " + str.tostring(blocked_trades) + "blk" : "OFF"
     table.cell(info, 1, 5, filter_text, text_color=use_regime_filter ? color.yellow : color.gray)
 
 // ============================================================================
