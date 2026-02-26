@@ -24,52 +24,43 @@ from config import V8_FAST_OPTIMIZED_PARAMS, V8_PARAMS
 RESULTS_DIR = Path("results")
 
 
+def _v8_fast_params(trial: optuna.Trial) -> dict:
+    """Build v8_fast param dict: 8 tunable + 6 hardcoded."""
+    return {
+        # 8 tunable params
+        "drop_window": trial.suggest_int("drop_window", 90, 120, step=5),
+        "min_drop_pct": trial.suggest_float("min_drop_pct", 10.0, 14.0, step=0.5),
+        "rise_window": trial.suggest_int("rise_window", 60, 100, step=5),
+        "min_up_bars_ratio": trial.suggest_float("min_up_bars_ratio", 0.25, 0.40, step=0.05),
+        "min_rise_pct": trial.suggest_float("min_rise_pct", 2.5, 4.5, step=0.25),
+        "atr_trailing_mult": trial.suggest_float("atr_trailing_mult", 3.0, 5.0, step=0.1),
+        "atr_fixed_mult": trial.suggest_float("atr_fixed_mult", 1.5, 3.0, step=0.1),
+        "daily_ema_period": trial.suggest_int("daily_ema_period", 3, 7),
+
+        # 6 hardcoded params (low importance / always same value)
+        "volume_confirm": False,
+        "atr_period": 14,
+        "max_single_up_bar": 10.0,
+        "max_single_down_bar": -5.0,
+        "trailing_pct": 6.0,
+        "fixed_stop_pct": 4.0,
+        "risk_per_trade_pct": 3.0,
+    }
+
+
 def create_v8_fast_objective(metric: str = "final_value", start_date: str = None, end_date: str = None):
     """
     Create objective function for v8_fast optimization.
+    R-based risk management: 3% risk at stop, 30/30/30/10 partials at 1R/2R/3R/runner.
+    8 tunable params (reduced from 14 to fight overfitting).
 
     Args:
-        metric: What to optimize - "final_value", "sharpe", or "return"
+        metric: What to optimize - "final_value", "sharpe", "return", or "r_expectancy"
         start_date: Optional start date filter (YYYY-MM-DD)
         end_date: Optional end date filter (YYYY-MM-DD)
     """
     def objective(trial: optuna.Trial) -> float:
-        # Narrowed ranges based on Trial #13 best values:
-        # drop_window=110, min_drop_pct=12, rise_window=80, min_up_bars_ratio=0.3
-        # atr_trailing_mult=4.5, atr_fixed_mult=2.5, atr_period=20
-        # partial_target_mult=5.5, use_partial_profits=False
-        params = {
-            # Drop detection (best: 110, 12.0)
-            "drop_window": trial.suggest_int("drop_window", 90, 120, step=5),
-            "min_drop_pct": trial.suggest_float("min_drop_pct", 10.0, 14.0, step=0.5),
-
-            # Rise requirements (best: 80, 0.3, 11.0, -6.0, 3.5)
-            "rise_window": trial.suggest_int("rise_window", 60, 100, step=5),
-            "min_up_bars_ratio": trial.suggest_float("min_up_bars_ratio", 0.25, 0.40, step=0.05),
-            "max_single_up_bar": trial.suggest_float("max_single_up_bar", 9.0, 13.0, step=0.5),
-            "max_single_down_bar": trial.suggest_float("max_single_down_bar", -8.0, -4.0, step=0.5),
-            "min_rise_pct": trial.suggest_float("min_rise_pct", 2.5, 4.5, step=0.25),
-
-            # Volume confirmation (best: False)
-            "volume_confirm": trial.suggest_categorical("volume_confirm", [False]),
-
-            # Daily confirmation (best: 5)
-            "daily_ema_period": trial.suggest_int("daily_ema_period", 3, 7),
-
-            # ATR-based stops (best: 20, 4.5, 2.5)
-            "atr_period": trial.suggest_int("atr_period", 16, 24, step=2),
-            "atr_trailing_mult": trial.suggest_float("atr_trailing_mult", 4.0, 5.0, step=0.1),
-            "atr_fixed_mult": trial.suggest_float("atr_fixed_mult", 2.0, 3.0, step=0.1),
-
-            # Fallback stops (best: 8.0, 5.0)
-            "trailing_pct": trial.suggest_float("trailing_pct", 6.0, 10.0, step=0.5),
-            "fixed_stop_pct": trial.suggest_float("fixed_stop_pct", 4.0, 6.0, step=0.5),
-
-            # Partial profit-taking (best: 5.5, 0.5, False)
-            "partial_target_mult": trial.suggest_float("partial_target_mult", 4.5, 6.5, step=0.25),
-            "partial_sell_ratio": trial.suggest_float("partial_sell_ratio", 0.4, 0.6, step=0.05),
-            "use_partial_profits": trial.suggest_categorical("use_partial_profits", [True, False]),
-        }
+        params = _v8_fast_params(trial)
 
         try:
             result = run_backtest(
@@ -87,6 +78,7 @@ def create_v8_fast_objective(metric: str = "final_value", start_date: str = None
             trial.set_user_attr("win_rate_pct", result.win_rate_pct or 0)
             trial.set_user_attr("max_drawdown_pct", result.max_drawdown_pct or 0)
             trial.set_user_attr("sharpe_ratio", result.sharpe_ratio or 0)
+            trial.set_user_attr("avg_r_multiple", result.avg_r_multiple or 0)
 
             if metric == "final_value":
                 return result.final_value
@@ -94,8 +86,105 @@ def create_v8_fast_objective(metric: str = "final_value", start_date: str = None
                 return result.sharpe_ratio or -999
             elif metric == "return":
                 return result.total_return_pct
+            elif metric == "r_expectancy":
+                if result.total_trades < 10:
+                    return -999.0
+                return result.avg_r_multiple or -999.0
             else:
                 return result.final_value
+
+        except Exception as e:
+            print(f"Trial failed: {e}")
+            return 0.0
+
+    return objective
+
+
+def create_v8_fast_walkforward_objective(
+    metric: str = "final_value",
+    start_date: str = None,
+    end_date: str = None,
+    inner_train_pct: int = 60,
+):
+    """
+    Nested walk-forward objective for v8_fast.
+    Each trial: run backtest on inner OOS portion (40% of training data) and score on that.
+    This directly selects for params that generalize, not just fit the training data.
+
+    Args:
+        metric: What to optimize on the OOS portion
+        start_date: Outer training start date (YYYY-MM-DD)
+        end_date: Outer training end date (YYYY-MM-DD)
+        inner_train_pct: Percentage of training data for inner train (default: 60%)
+    """
+    from backtest import load_data
+
+    # Load data once to calculate the inner split point
+    df = load_data(source="binance", timeframe="15m")
+    if start_date:
+        df = df[df.index >= start_date]
+    if end_date:
+        df = df[df.index <= end_date]
+
+    total_rows = len(df)
+    split_idx = int(total_rows * inner_train_pct / 100)
+    inner_train_end = str(df.index[split_idx - 1].date())
+    inner_test_start = str(df.index[split_idx].date())
+    inner_test_end = end_date
+
+    print(f"\nNested walk-forward split (within training data):")
+    print(f"  Inner train ({inner_train_pct}%): {start_date or df.index.min().date()} to {inner_train_end}")
+    print(f"  Inner test ({100 - inner_train_pct}%): {inner_test_start} to {inner_test_end or df.index.max().date()}")
+
+    def objective(trial: optuna.Trial) -> float:
+        params = _v8_fast_params(trial)
+
+        try:
+            # Score on inner OOS portion
+            oos_result = run_backtest(
+                strategy_name="v8_fast",
+                params_override=params,
+                save=False,
+                verbose=False,
+                start_date=inner_test_start,
+                end_date=inner_test_end,
+            )
+
+            trial.set_user_attr("oos_return_pct", oos_result.total_return_pct)
+            trial.set_user_attr("oos_trades", oos_result.total_trades)
+            trial.set_user_attr("oos_win_rate", oos_result.win_rate_pct or 0)
+            trial.set_user_attr("oos_max_dd", oos_result.max_drawdown_pct or 0)
+            trial.set_user_attr("total_return_pct", oos_result.total_return_pct)
+            trial.set_user_attr("total_trades", oos_result.total_trades)
+            trial.set_user_attr("win_rate_pct", oos_result.win_rate_pct or 0)
+            trial.set_user_attr("max_drawdown_pct", oos_result.max_drawdown_pct or 0)
+            trial.set_user_attr("sharpe_ratio", oos_result.sharpe_ratio or 0)
+            trial.set_user_attr("avg_r_multiple", oos_result.avg_r_multiple or 0)
+
+            # Also run IS for comparison logging
+            is_result = run_backtest(
+                strategy_name="v8_fast",
+                params_override=params,
+                save=False,
+                verbose=False,
+                start_date=start_date,
+                end_date=inner_train_end,
+            )
+            trial.set_user_attr("is_return_pct", is_result.total_return_pct)
+            trial.set_user_attr("is_trades", is_result.total_trades)
+
+            if metric == "final_value":
+                return oos_result.final_value
+            elif metric == "sharpe":
+                return oos_result.sharpe_ratio or -999
+            elif metric == "return":
+                return oos_result.total_return_pct
+            elif metric == "r_expectancy":
+                if oos_result.total_trades < 5:
+                    return -999.0
+                return oos_result.avg_r_multiple or -999.0
+            else:
+                return oos_result.final_value
 
         except Exception as e:
             print(f"Trial failed: {e}")
@@ -716,15 +805,309 @@ def create_v17_objective(metric: str = "expectancy", start_date: str = None, end
     return objective
 
 
+def _v19_params(trial: optuna.Trial) -> dict:
+    """Build v19 param dict: 4 tunable + 2 hardcoded.
+    Separate atr_mult for long vs short — longs need tight stops (~3-5x),
+    shorts need much wider stops on SOL (~6-12x) due to upward bias.
+    """
+    return {
+        # Shared squeeze detection
+        "lookback": trial.suggest_int("lookback", 30, 120, step=6),
+        "squeeze_pctile": trial.suggest_int("squeeze_pctile", 10, 40, step=5),
+        # Direction-specific ATR multipliers
+        "atr_mult_long": trial.suggest_float("atr_mult_long", 2.0, 6.0, step=0.25),
+        "atr_mult_short": trial.suggest_float("atr_mult_short", 4.0, 28.0, step=0.5),
+        # Hardcoded
+        "atr_period": 14,
+        "risk_per_trade_pct": 3.0,
+    }
+
+
+def create_v19_objective(metric: str = "r_expectancy", start_date: str = None, end_date: str = None):
+    """
+    Create objective function for v19 (Volatility Squeeze Breakout).
+    R-based risk management: 3% risk at stop, 30/30/30/10 partials at 1R/2R/3R/runner.
+    Only 3 optimizable params — lookback, squeeze_pctile, atr_mult.
+    """
+    def objective(trial: optuna.Trial) -> float:
+        params = _v19_params(trial)
+
+        try:
+            result = run_backtest(
+                strategy_name="v19",
+                params_override=params,
+                save=False,
+                verbose=False,
+                start_date=start_date,
+                end_date=end_date,
+            )
+
+            trial.set_user_attr("total_return_pct", result.total_return_pct)
+            trial.set_user_attr("total_trades", result.total_trades)
+            trial.set_user_attr("win_rate_pct", result.win_rate_pct or 0)
+            trial.set_user_attr("max_drawdown_pct", result.max_drawdown_pct or 0)
+            trial.set_user_attr("sharpe_ratio", result.sharpe_ratio or 0)
+            trial.set_user_attr("avg_r_multiple", result.avg_r_multiple or 0)
+
+            if metric == "final_value":
+                return result.final_value
+            elif metric == "sharpe":
+                return result.sharpe_ratio or -999
+            elif metric == "return":
+                return result.total_return_pct
+            elif metric == "r_expectancy":
+                if result.total_trades < 10:
+                    return -999.0
+                return result.avg_r_multiple or -999.0
+            else:
+                return result.final_value
+
+        except Exception as e:
+            print(f"Trial failed: {e}")
+            return 0.0
+
+    return objective
+
+
+def create_v19_walkforward_objective(
+    metric: str = "r_expectancy",
+    start_date: str = None,
+    end_date: str = None,
+    inner_train_pct: int = 60,
+):
+    """
+    Nested walk-forward objective for v19.
+    Each trial: run backtest on inner OOS portion and score on that.
+    """
+    from backtest import load_data
+
+    df = load_data(source="binance", timeframe="15m")
+    if start_date:
+        df = df[df.index >= start_date]
+    if end_date:
+        df = df[df.index <= end_date]
+
+    total_rows = len(df)
+    split_idx = int(total_rows * inner_train_pct / 100)
+    inner_train_end = str(df.index[split_idx - 1].date())
+    inner_test_start = str(df.index[split_idx].date())
+    inner_test_end = end_date
+
+    print(f"\nNested walk-forward split (within training data):")
+    print(f"  Inner train ({inner_train_pct}%): {start_date or df.index.min().date()} to {inner_train_end}")
+    print(f"  Inner test ({100 - inner_train_pct}%): {inner_test_start} to {inner_test_end or df.index.max().date()}")
+
+    def objective(trial: optuna.Trial) -> float:
+        params = _v19_params(trial)
+
+        try:
+            oos_result = run_backtest(
+                strategy_name="v19",
+                params_override=params,
+                save=False,
+                verbose=False,
+                start_date=inner_test_start,
+                end_date=inner_test_end,
+            )
+
+            trial.set_user_attr("oos_return_pct", oos_result.total_return_pct)
+            trial.set_user_attr("oos_trades", oos_result.total_trades)
+            trial.set_user_attr("oos_win_rate", oos_result.win_rate_pct or 0)
+            trial.set_user_attr("oos_max_dd", oos_result.max_drawdown_pct or 0)
+            trial.set_user_attr("total_return_pct", oos_result.total_return_pct)
+            trial.set_user_attr("total_trades", oos_result.total_trades)
+            trial.set_user_attr("win_rate_pct", oos_result.win_rate_pct or 0)
+            trial.set_user_attr("max_drawdown_pct", oos_result.max_drawdown_pct or 0)
+            trial.set_user_attr("sharpe_ratio", oos_result.sharpe_ratio or 0)
+            trial.set_user_attr("avg_r_multiple", oos_result.avg_r_multiple or 0)
+
+            is_result = run_backtest(
+                strategy_name="v19",
+                params_override=params,
+                save=False,
+                verbose=False,
+                start_date=start_date,
+                end_date=inner_train_end,
+            )
+            trial.set_user_attr("is_return_pct", is_result.total_return_pct)
+            trial.set_user_attr("is_trades", is_result.total_trades)
+
+            if metric == "final_value":
+                return oos_result.final_value
+            elif metric == "sharpe":
+                return oos_result.sharpe_ratio or -999
+            elif metric == "return":
+                return oos_result.total_return_pct
+            elif metric == "r_expectancy":
+                if oos_result.total_trades < 5:
+                    return -999.0
+                return oos_result.avg_r_multiple or -999.0
+            else:
+                return oos_result.final_value
+
+        except Exception as e:
+            print(f"Trial failed: {e}")
+            return 0.0
+
+    return objective
+
+
+def _v20_params(trial: optuna.Trial) -> dict:
+    """Build v20 param dict: 4 tunable + 4 hardcoded."""
+    return {
+        # 4 tunable params
+        "swing_lookback": trial.suggest_int("swing_lookback", 3, 8, step=1),
+        "top_tolerance": trial.suggest_float("top_tolerance", 0.01, 0.06, step=0.005),
+        "atr_stop_mult": trial.suggest_float("atr_stop_mult", 1.5, 4.0, step=0.25),
+        "atr_trail_mult": trial.suggest_float("atr_trail_mult", 2.0, 5.0, step=0.25),
+        # 4 hardcoded
+        "atr_period": 14,
+        "risk_per_trade_pct": 3.0,
+        "min_pattern_bars": 10,
+        "min_hs_bars": 15,
+    }
+
+
+def create_v20_objective(metric: str = "r_expectancy", start_date: str = None, end_date: str = None):
+    """
+    Create objective function for v20 (Short-Only Double Top & H&S).
+    R-based risk management: 3% risk at stop, 30/30/30/10 partials at 1R/2R/3R/runner.
+    Only 4 optimizable params — swing_lookback, top_tolerance, atr_stop_mult, atr_trail_mult.
+    """
+    def objective(trial: optuna.Trial) -> float:
+        params = _v20_params(trial)
+
+        try:
+            result = run_backtest(
+                strategy_name="v20",
+                params_override=params,
+                save=False,
+                verbose=False,
+                start_date=start_date,
+                end_date=end_date,
+            )
+
+            trial.set_user_attr("total_return_pct", result.total_return_pct)
+            trial.set_user_attr("total_trades", result.total_trades)
+            trial.set_user_attr("win_rate_pct", result.win_rate_pct or 0)
+            trial.set_user_attr("max_drawdown_pct", result.max_drawdown_pct or 0)
+            trial.set_user_attr("sharpe_ratio", result.sharpe_ratio or 0)
+            trial.set_user_attr("avg_r_multiple", result.avg_r_multiple or 0)
+
+            if metric == "final_value":
+                return result.final_value
+            elif metric == "sharpe":
+                return result.sharpe_ratio or -999
+            elif metric == "return":
+                return result.total_return_pct
+            elif metric == "r_expectancy":
+                if result.total_trades < 5:
+                    return -999.0
+                return result.avg_r_multiple or -999.0
+            else:
+                return result.final_value
+
+        except Exception as e:
+            print(f"Trial failed: {e}")
+            return 0.0
+
+    return objective
+
+
+def create_v20_walkforward_objective(
+    metric: str = "r_expectancy",
+    start_date: str = None,
+    end_date: str = None,
+    inner_train_pct: int = 60,
+):
+    """
+    Nested walk-forward objective for v20.
+    Each trial: run backtest on inner OOS portion and score on that.
+    """
+    from backtest import load_data
+
+    df = load_data(source="binance", timeframe="15m")
+    if start_date:
+        df = df[df.index >= start_date]
+    if end_date:
+        df = df[df.index <= end_date]
+
+    total_rows = len(df)
+    split_idx = int(total_rows * inner_train_pct / 100)
+    inner_train_end = str(df.index[split_idx - 1].date())
+    inner_test_start = str(df.index[split_idx].date())
+    inner_test_end = end_date
+
+    print(f"\nNested walk-forward split (within training data):")
+    print(f"  Inner train ({inner_train_pct}%): {start_date or df.index.min().date()} to {inner_train_end}")
+    print(f"  Inner test ({100 - inner_train_pct}%): {inner_test_start} to {inner_test_end or df.index.max().date()}")
+
+    def objective(trial: optuna.Trial) -> float:
+        params = _v20_params(trial)
+
+        try:
+            oos_result = run_backtest(
+                strategy_name="v20",
+                params_override=params,
+                save=False,
+                verbose=False,
+                start_date=inner_test_start,
+                end_date=inner_test_end,
+            )
+
+            trial.set_user_attr("oos_return_pct", oos_result.total_return_pct)
+            trial.set_user_attr("oos_trades", oos_result.total_trades)
+            trial.set_user_attr("oos_win_rate", oos_result.win_rate_pct or 0)
+            trial.set_user_attr("oos_max_dd", oos_result.max_drawdown_pct or 0)
+            trial.set_user_attr("total_return_pct", oos_result.total_return_pct)
+            trial.set_user_attr("total_trades", oos_result.total_trades)
+            trial.set_user_attr("win_rate_pct", oos_result.win_rate_pct or 0)
+            trial.set_user_attr("max_drawdown_pct", oos_result.max_drawdown_pct or 0)
+            trial.set_user_attr("sharpe_ratio", oos_result.sharpe_ratio or 0)
+            trial.set_user_attr("avg_r_multiple", oos_result.avg_r_multiple or 0)
+
+            is_result = run_backtest(
+                strategy_name="v20",
+                params_override=params,
+                save=False,
+                verbose=False,
+                start_date=start_date,
+                end_date=inner_train_end,
+            )
+            trial.set_user_attr("is_return_pct", is_result.total_return_pct)
+            trial.set_user_attr("is_trades", is_result.total_trades)
+
+            if metric == "final_value":
+                return oos_result.final_value
+            elif metric == "sharpe":
+                return oos_result.sharpe_ratio or -999
+            elif metric == "return":
+                return oos_result.total_return_pct
+            elif metric == "r_expectancy":
+                if oos_result.total_trades < 3:
+                    return -999.0
+                return oos_result.avg_r_multiple or -999.0
+            else:
+                return oos_result.final_value
+
+        except Exception as e:
+            print(f"Trial failed: {e}")
+            return 0.0
+
+    return objective
+
+
 def create_v18_objective(metric: str = "final_value", start_date: str = None, end_date: str = None):
     """
     Create objective function for v18 (Donchian Channel Breakout).
-    Only 2 optimizable params — 405 total combinations.
+    R-based risk management: 3% risk at stop, 30/30/30/10 partials at 1R/2R/3R/runner.
+    Only 2 optimizable params — channel_period and atr_trail_mult (defines 1R).
     """
     def objective(trial: optuna.Trial) -> float:
         params = {
             "channel_period": trial.suggest_int("channel_period", 12, 96, step=6),
             "atr_trail_mult": trial.suggest_float("atr_trail_mult", 1.5, 8.0, step=0.25),
+            "risk_per_trade_pct": 3.0,
         }
 
         try:
@@ -742,6 +1125,7 @@ def create_v18_objective(metric: str = "final_value", start_date: str = None, en
             trial.set_user_attr("win_rate_pct", result.win_rate_pct or 0)
             trial.set_user_attr("max_drawdown_pct", result.max_drawdown_pct or 0)
             trial.set_user_attr("sharpe_ratio", result.sharpe_ratio or 0)
+            trial.set_user_attr("avg_r_multiple", result.avg_r_multiple or 0)
 
             if metric == "final_value":
                 return result.final_value
@@ -749,6 +1133,10 @@ def create_v18_objective(metric: str = "final_value", start_date: str = None, en
                 return result.sharpe_ratio or -999
             elif metric == "return":
                 return result.total_return_pct
+            elif metric == "r_expectancy":
+                if result.total_trades < 20:
+                    return -999.0
+                return result.avg_r_multiple or -999.0
             else:
                 return result.final_value
 
@@ -767,6 +1155,7 @@ def optimize(
     study_name: str = None,
     start_date: str = None,
     end_date: str = None,
+    walk_forward_opt: bool = False,
 ):
     """
     Run optimization study.
@@ -814,7 +1203,10 @@ def optimize(
         )
 
     # Select objective function
-    if strategy == "v8_fast":
+    if strategy == "v8_fast" and walk_forward_opt:
+        objective = create_v8_fast_walkforward_objective(
+            metric, start_date=start_date, end_date=end_date)
+    elif strategy == "v8_fast":
         objective = create_v8_fast_objective(metric, start_date=start_date, end_date=end_date)
     elif strategy == "v8":
         objective = create_v8_objective(metric, start_date=start_date, end_date=end_date)
@@ -834,11 +1226,23 @@ def optimize(
         objective = create_v17_objective(metric, start_date=start_date, end_date=end_date)
     elif strategy == "v18":
         objective = create_v18_objective(metric, start_date=start_date, end_date=end_date)
+    elif strategy == "v19" and walk_forward_opt:
+        objective = create_v19_walkforward_objective(
+            metric, start_date=start_date, end_date=end_date)
+    elif strategy == "v19":
+        objective = create_v19_objective(metric, start_date=start_date, end_date=end_date)
+    elif strategy == "v20" and walk_forward_opt:
+        objective = create_v20_walkforward_objective(
+            metric, start_date=start_date, end_date=end_date)
+    elif strategy == "v20":
+        objective = create_v20_objective(metric, start_date=start_date, end_date=end_date)
     else:
         raise ValueError(f"Unknown strategy: {strategy}")
 
     print(f"\nStarting optimization for {strategy}")
     print(f"Metric: {metric}")
+    if walk_forward_opt:
+        print(f"Mode: NESTED WALK-FORWARD (scoring on inner OOS)")
     print(f"Trials: {n_trials}")
     print(f"Study: {study_name}")
     print("-" * 60)
@@ -848,7 +1252,15 @@ def optimize(
         trades = trial.user_attrs.get('total_trades', 0)
         ret = trial.user_attrs.get('total_return_pct', 0)
         tpd = trial.user_attrs.get('trades_per_day', 0)
-        if tpd and tpd > 0:
+
+        # Show IS/OOS breakdown for walk-forward-opt mode
+        is_ret = trial.user_attrs.get('is_return_pct', None)
+        oos_ret = trial.user_attrs.get('oos_return_pct', None)
+        if is_ret is not None and oos_ret is not None and trial.value is not None:
+            print(f"Trial {trial.number}: Score={trial.value:,.2f} "
+                  f"(IS: {is_ret:+.1f}%, OOS: {oos_ret:+.1f}%, "
+                  f"Trades: {trades})")
+        elif tpd and tpd > 0:
             print(f"Trial {trial.number}: Score={trial.value:,.2f} "
                   f"(Return: {ret:+.1f}%, "
                   f"Trades: {trades}, "
@@ -1049,13 +1461,14 @@ Examples:
   python optimizer.py --metric sharpe          # Optimize for Sharpe ratio
   python optimizer.py --resume --study my_study  # Resume previous study
   python optimizer.py -s v8_fast --importance  # Analyze parameter importance
+  python optimizer.py -s v8_fast -w            # Nested walk-forward optimization
         """,
     )
 
     parser.add_argument(
         "--strategy", "-s",
         default="v8_fast",
-        choices=["v8", "v8_fast", "v9", "v11", "v13", "v14", "v15", "v16", "v17", "v18"],
+        choices=["v8", "v8_fast", "v9", "v11", "v13", "v14", "v15", "v16", "v17", "v18", "v19", "v20"],
         help="Strategy to optimize (default: v8_fast)"
     )
 
@@ -1069,8 +1482,8 @@ Examples:
     parser.add_argument(
         "--metric", "-m",
         default="final_value",
-        choices=["final_value", "sharpe", "return", "win_rate", "expectancy"],
-        help="Metric to optimize (default: final_value, v15: expectancy)"
+        choices=["final_value", "sharpe", "return", "win_rate", "expectancy", "r_expectancy"],
+        help="Metric to optimize (default: final_value, r_expectancy for R-based)"
     )
 
     parser.add_argument(
@@ -1104,6 +1517,12 @@ Examples:
     )
 
     parser.add_argument(
+        "--walk-forward-opt", "-w",
+        action="store_true",
+        help="Use nested walk-forward optimization (score each trial on inner OOS portion)"
+    )
+
+    parser.add_argument(
         "--importance", "-i",
         action="store_true",
         help="Analyze parameter importance from existing study"
@@ -1130,6 +1549,7 @@ Examples:
         study_name=args.study,
         start_date=args.start_date,
         end_date=args.end_date,
+        walk_forward_opt=args.walk_forward_opt,
     )
 
     print_results(study, args.strategy)

@@ -1,0 +1,717 @@
+//@version=6
+indicator("V8 Fast v2 — R-Based Rounded Bottom/Top + Regime Dashboard", overlay=true, max_lines_count=500, max_labels_count=500)
+
+// ============================================================================
+// STRATEGY OVERVIEW
+// ============================================================================
+// V8 Fast with R-based risk management, long+short, and combined dashboard.
+//
+// LONG (Rounded Bottom):
+//   Fast Drop (>=13% over 120 4H bars) → Slow Rise (majority up bars) → Entry
+//   MTF: 4H close > daily EMA(6)
+//
+// SHORT (Rounded Top — exact inverse):
+//   Fast Pump (>=13% over 120 4H bars) → Slow Decline (majority down bars) → Entry
+//   MTF: 4H close < daily EMA(6)
+//
+// Exits (R-based):
+//   30% at 1R, 30% at 2R, 30% at 3R, 10% runner with ATR trail
+//   Stop ratchets: breakeven at 1R, +1R at 2R, +2R at 3R
+//   1R = ATR(14) * 3.0
+//
+// Run on 4H chart for best results.
+
+// ============================================================================
+// INPUTS
+// ============================================================================
+
+// --- Pattern Detection ---
+drop_window       = input.int(120,    "Drop/Pump Window (4H bars)", minval=10, maxval=300)
+min_drop_pct      = input.float(13.0, "Min Drop/Pump %", step=0.5)
+rise_window       = input.int(75,     "Rise/Decline Window (4H bars)", minval=10, maxval=300)
+min_up_bars_ratio = input.float(0.25, "Min Directional Bars Ratio", step=0.05, minval=0.1, maxval=0.9)
+max_single_up     = input.float(10.0, "Max Single Up Bar %", step=0.5)
+max_single_down   = input.float(-5.0, "Max Single Down Bar %", step=0.5)
+min_rise_pct      = input.float(3.5,  "Min Total Move %", step=0.25)
+
+// --- Filters ---
+daily_ema_len     = input.int(6,      "Daily EMA Period")
+
+// --- ATR & Risk ---
+atr_period        = input.int(14,     "ATR Period")
+atr_fixed_mult    = input.float(3.0,  "Fixed Stop ATR Mult (= 1R)", step=0.1)
+atr_trailing_mult = input.float(3.9,  "Runner Trail ATR Mult", step=0.1)
+trailing_pct_fb   = input.float(6.0,  "Fallback Trailing %", step=0.5)
+fixed_stop_pct_fb = input.float(4.0,  "Fallback Fixed Stop %", step=0.5)
+risk_pct          = input.float(3.0,  "Risk Per Trade %", step=0.5)
+
+// --- Direction Toggles ---
+enable_longs      = input.bool(true,  "Enable Long Entries")
+enable_shorts     = input.bool(true,  "Enable Short Entries")
+
+// --- Display ---
+show_r_lines      = input.bool(true,  "Show R-Target Lines")
+show_trade_labels = input.bool(true,  "Show Entry Labels")
+show_exit_labels  = input.bool(true,  "Show Exit Labels")
+show_stop_line    = input.bool(true,  "Show Dynamic Stop Line")
+show_drop_labels  = input.bool(true,  "Show Drop/Pump Labels")
+
+// --- Account ---
+account_equity    = input.float(10000, "Account Equity ($)", step=1000)
+
+// ============================================================================
+// DAILY EMA (MTF Filter)
+// ============================================================================
+
+daily_ema = request.security(syminfo.tickerid, "D", ta.ema(close, daily_ema_len))
+plot(daily_ema, color=color.new(color.orange, 30), title="Daily EMA", linewidth=2)
+
+// ============================================================================
+// REGIME CLASSIFICATION (matches rotation + v18)
+// ============================================================================
+
+daily_ema_21  = request.security(syminfo.tickerid, "1D", ta.ema(close, 21))
+daily_close   = request.security(syminfo.tickerid, "1D", close)
+ema_slope     = daily_ema_21[5] > 0 ? (daily_ema_21 - daily_ema_21[5]) / daily_ema_21[5] * 100 : 0.0
+
+var string regime_trend = "ranging"
+if ema_slope > 0 and daily_close > daily_ema_21
+    regime_trend := "uptrend"
+else if ema_slope < 0 and daily_close < daily_ema_21
+    regime_trend := "downtrend"
+else
+    regime_trend := "ranging"
+
+atr_4h        = request.security(syminfo.tickerid, "240", ta.atr(14))
+atr_pct_rank  = ta.percentrank(atr_4h, 90)
+var string regime_vol = "normal_vol"
+if atr_pct_rank > 75
+    regime_vol := "high_vol"
+else if atr_pct_rank < 25
+    regime_vol := "low_vol"
+else
+    regime_vol := "normal_vol"
+regime_label  = regime_trend + "_" + regime_vol
+
+// Strategy rotation recommendation (from rotation script)
+var string rotation_rec = "cash"
+if regime_vol == "high_vol"
+    if regime_trend == "uptrend"
+        rotation_rec := "v8_fast"
+    else
+        rotation_rec := "v18"
+else if regime_trend == "uptrend" and regime_vol == "normal_vol"
+    rotation_rec := "v8_fast"
+else
+    rotation_rec := "cash"
+
+// ============================================================================
+// ATR
+// ============================================================================
+
+atr = ta.atr(atr_period)
+
+// ============================================================================
+// DROP / PUMP DETECTION
+// ============================================================================
+
+peak_val   = ta.highest(close, drop_window)
+trough_val = ta.lowest(close, drop_window)
+
+drop_pct = peak_val > 0 ? (trough_val - peak_val) / peak_val * 100 : 0.0  // negative
+pump_pct = trough_val > 0 ? (peak_val - trough_val) / trough_val * 100 : 0.0  // positive
+
+bar_change_pct = close[1] > 0 ? (close - close[1]) / close[1] * 100 : 0.0
+
+// ============================================================================
+// LONG STATE — Drop → Rise → Long Entry
+// ============================================================================
+
+var bool  long_drop_detected = false
+var bool  show_drop_flag     = false
+var float[] long_win_close   = array.new_float(0)
+var float[] long_win_change  = array.new_float(0)
+
+// ============================================================================
+// SHORT STATE — Pump → Decline → Short Entry
+// ============================================================================
+
+var bool  short_pump_detected = false
+var bool  show_pump_flag      = false
+var float[] short_win_close   = array.new_float(0)
+var float[] short_win_change  = array.new_float(0)
+
+// ============================================================================
+// TRADE STATE (R-based, one position at a time)
+// ============================================================================
+
+var int   active_direction  = 0       // 0=flat, 1=long, -1=short
+var float active_entry      = na
+var float entry_atr_val     = na
+var float stop_distance     = na      // 1R
+var float r1_target         = na
+var float r2_target         = na
+var float r3_target         = na
+var float current_stop      = na
+var int   partials_taken    = 0       // 0, 1, 2, 3
+var float hwm               = na      // high/low water mark
+var float initial_size      = na
+var int   bars_in_trade     = 0
+
+// Stats
+var int   total_trades      = 0
+var int   winning_trades    = 0
+var int   losing_trades     = 0
+var float total_r           = 0.0
+
+if active_direction != 0
+    bars_in_trade := bars_in_trade + 1
+
+// ============================================================================
+// LONG: DROP DETECTION
+// ============================================================================
+
+long_drop_trigger = enable_longs and not long_drop_detected and drop_pct <= -min_drop_pct and active_direction == 0
+
+if long_drop_trigger
+    long_drop_detected := true
+    array.clear(long_win_close)
+    array.clear(long_win_change)
+    show_drop_flag := true
+
+if show_drop_labels and show_drop_flag
+    label.new(bar_index, low, "DROP\n" + str.tostring(math.abs(drop_pct), "#.#") + "%",
+         color=color.new(color.red, 15), textcolor=color.white,
+         style=label.style_label_up, size=size.small)
+    show_drop_flag := false
+
+// ============================================================================
+// SHORT: PUMP DETECTION
+// ============================================================================
+
+short_pump_trigger = enable_shorts and not short_pump_detected and pump_pct >= min_drop_pct and active_direction == 0
+
+if short_pump_trigger
+    short_pump_detected := true
+    array.clear(short_win_close)
+    array.clear(short_win_change)
+    show_pump_flag := true
+
+if show_drop_labels and show_pump_flag
+    label.new(bar_index, high, "PUMP\n" + str.tostring(pump_pct, "#.#") + "%",
+         color=color.new(color.green, 15), textcolor=color.white,
+         style=label.style_label_down, size=size.small)
+    show_pump_flag := false
+
+// ============================================================================
+// LONG: SLIDING WINDOW RISE DETECTION
+// ============================================================================
+
+var bool long_entry_signal = false
+long_entry_signal := false
+
+if long_drop_detected and active_direction == 0
+    is_explosive = bar_change_pct > max_single_up
+    is_panic     = bar_change_pct < max_single_down
+
+    if not is_explosive and not is_panic
+        array.push(long_win_close, close)
+        array.push(long_win_change, bar_change_pct)
+
+        while array.size(long_win_close) > rise_window
+            array.shift(long_win_close)
+            array.shift(long_win_change)
+
+        min_bars = math.max(rise_window / 2, 10)
+        if array.size(long_win_close) >= min_bars
+            up_count = 0
+            total_bars_l = array.size(long_win_change)
+            for i = 0 to total_bars_l - 1
+                if array.get(long_win_change, i) > 0
+                    up_count += 1
+            up_ratio = total_bars_l > 0 ? up_count / total_bars_l : 0.0
+
+            start_price_l = array.get(long_win_close, 0)
+            end_price_l   = array.get(long_win_close, total_bars_l - 1)
+            total_rise    = start_price_l > 0 ? (end_price_l - start_price_l) / start_price_l * 100 : 0.0
+
+            mtf_ok = close > daily_ema
+
+            if up_ratio >= min_up_bars_ratio and total_rise >= min_rise_pct and mtf_ok
+                long_entry_signal := true
+
+// ============================================================================
+// SHORT: SLIDING WINDOW DECLINE DETECTION
+// ============================================================================
+
+var bool short_entry_signal = false
+short_entry_signal := false
+
+if short_pump_detected and active_direction == 0
+    is_explosive_down = bar_change_pct < max_single_down
+    is_explosive_up   = bar_change_pct > max_single_up
+
+    if not is_explosive_down and not is_explosive_up
+        array.push(short_win_close, close)
+        array.push(short_win_change, bar_change_pct)
+
+        while array.size(short_win_close) > rise_window
+            array.shift(short_win_close)
+            array.shift(short_win_change)
+
+        min_bars_s = math.max(rise_window / 2, 10)
+        if array.size(short_win_close) >= min_bars_s
+            down_count = 0
+            total_bars_s = array.size(short_win_change)
+            for i = 0 to total_bars_s - 1
+                if array.get(short_win_change, i) < 0
+                    down_count += 1
+            down_ratio = total_bars_s > 0 ? down_count / total_bars_s : 0.0
+
+            start_price_s = array.get(short_win_close, 0)
+            end_price_s   = array.get(short_win_close, total_bars_s - 1)
+            total_decline  = start_price_s > 0 ? (start_price_s - end_price_s) / start_price_s * 100 : 0.0
+
+            mtf_ok_s = close < daily_ema
+
+            if down_ratio >= min_up_bars_ratio and total_decline >= min_rise_pct and mtf_ok_s
+                short_entry_signal := true
+
+// ============================================================================
+// R-TARGET HELPERS
+// ============================================================================
+
+calc_stop_for_level(float entry, float sd, int level, int dir) =>
+    // dir: 1=long, -1=short
+    float result = na
+    if dir == 1
+        if level >= 3
+            result := entry + sd * 2   // +2R
+        else if level >= 2
+            result := entry + sd        // +1R
+        else if level >= 1
+            result := entry              // breakeven
+        else
+            result := entry - sd         // -1R
+    else
+        if level >= 3
+            result := entry - sd * 2
+        else if level >= 2
+            result := entry - sd
+        else if level >= 1
+            result := entry
+        else
+            result := entry + sd
+    result
+
+// ============================================================================
+// EXIT LOGIC — R-based partials + stop ratcheting + runner trail
+// ============================================================================
+
+var bool exit_signal      = false
+var float exit_pnl_pct    = na
+var float exit_r_mult     = na
+var string exit_reason    = ""
+var bool partial_signal   = false
+var float partial_price   = na
+var int partial_num       = 0
+
+exit_signal    := false
+exit_pnl_pct   := na
+exit_r_mult    := na
+exit_reason    := ""
+partial_signal := false
+partial_price  := na
+partial_num    := 0
+
+// ── LONG EXITS ──
+if active_direction == 1
+    hwm := math.max(hwm, close)
+
+    // Check partials: 1R, 2R, 3R
+    if partials_taken < 1 and not na(r1_target) and close >= r1_target
+        partials_taken := 1
+        current_stop   := calc_stop_for_level(active_entry, stop_distance, 1, 1)
+        partial_signal := true
+        partial_price  := close
+        partial_num    := 1
+
+    else if partials_taken < 2 and partials_taken >= 1 and not na(r2_target) and close >= r2_target
+        partials_taken := 2
+        current_stop   := calc_stop_for_level(active_entry, stop_distance, 2, 1)
+        partial_signal := true
+        partial_price  := close
+        partial_num    := 2
+
+    else if partials_taken < 3 and partials_taken >= 2 and not na(r3_target) and close >= r3_target
+        partials_taken := 3
+        current_stop   := calc_stop_for_level(active_entry, stop_distance, 3, 1)
+        partial_signal := true
+        partial_price  := close
+        partial_num    := 3
+
+    // Runner trailing stop (after all 3 partials)
+    if partials_taken >= 3
+        trail_dist_l = not na(entry_atr_val) and entry_atr_val > 0 ? entry_atr_val * atr_trailing_mult : active_entry * (trailing_pct_fb / 100)
+        trail_stop_l = hwm - trail_dist_l
+        if trail_stop_l > current_stop
+            current_stop := trail_stop_l
+
+    // Stop hit
+    if close <= current_stop
+        exit_pnl_pct := (close - active_entry) / active_entry * 100
+        exit_r_mult  := stop_distance > 0 ? (close - active_entry) / stop_distance : 0.0
+        exit_reason  := partials_taken == 0 ? "STOP -1R" : partials_taken >= 3 ? "RUNNER TRAIL" : "RATCHET"
+        total_trades += 1
+        total_r      += exit_r_mult
+        if close > active_entry
+            winning_trades += 1
+        else
+            losing_trades += 1
+        exit_signal      := true
+        active_direction := 0
+        active_entry     := na
+        entry_atr_val    := na
+        stop_distance    := na
+        r1_target        := na
+        r2_target        := na
+        r3_target        := na
+        current_stop     := na
+        hwm              := na
+        initial_size     := na
+        partials_taken   := 0
+        bars_in_trade    := 0
+        long_drop_detected := false
+
+// ── SHORT EXITS ──
+if active_direction == -1
+    hwm := math.min(hwm, close)
+
+    // Check partials: 1R, 2R, 3R (price moves DOWN for short profits)
+    if partials_taken < 1 and not na(r1_target) and close <= r1_target
+        partials_taken := 1
+        current_stop   := calc_stop_for_level(active_entry, stop_distance, 1, -1)
+        partial_signal := true
+        partial_price  := close
+        partial_num    := 1
+
+    else if partials_taken < 2 and partials_taken >= 1 and not na(r2_target) and close <= r2_target
+        partials_taken := 2
+        current_stop   := calc_stop_for_level(active_entry, stop_distance, 2, -1)
+        partial_signal := true
+        partial_price  := close
+        partial_num    := 2
+
+    else if partials_taken < 3 and partials_taken >= 2 and not na(r3_target) and close <= r3_target
+        partials_taken := 3
+        current_stop   := calc_stop_for_level(active_entry, stop_distance, 3, -1)
+        partial_signal := true
+        partial_price  := close
+        partial_num    := 3
+
+    // Runner trailing stop (after all 3 partials)
+    if partials_taken >= 3
+        trail_dist_s = not na(entry_atr_val) and entry_atr_val > 0 ? entry_atr_val * atr_trailing_mult : active_entry * (trailing_pct_fb / 100)
+        trail_stop_s = hwm + trail_dist_s
+        if trail_stop_s < current_stop
+            current_stop := trail_stop_s
+
+    // Stop hit (for shorts, price goes UP to hit stop)
+    if close >= current_stop
+        exit_pnl_pct := (active_entry - close) / active_entry * 100
+        exit_r_mult  := stop_distance > 0 ? (active_entry - close) / stop_distance : 0.0
+        exit_reason  := partials_taken == 0 ? "STOP -1R" : partials_taken >= 3 ? "RUNNER TRAIL" : "RATCHET"
+        total_trades += 1
+        total_r      += exit_r_mult
+        if close < active_entry
+            winning_trades += 1
+        else
+            losing_trades += 1
+        exit_signal      := true
+        active_direction := 0
+        active_entry     := na
+        entry_atr_val    := na
+        stop_distance    := na
+        r1_target        := na
+        r2_target        := na
+        r3_target        := na
+        current_stop     := na
+        hwm              := na
+        initial_size     := na
+        partials_taken   := 0
+        bars_in_trade    := 0
+        short_pump_detected := false
+
+// ============================================================================
+// NEW LONG ENTRY
+// ============================================================================
+
+if long_entry_signal and active_direction == 0
+    sd = atr > 0 ? atr * atr_fixed_mult : close * (fixed_stop_pct_fb / 100)
+    risk_amt = account_equity * (risk_pct / 100)
+    pos_size = sd > 0 ? risk_amt / sd : 0.0
+
+    active_entry     := close
+    entry_atr_val    := atr
+    stop_distance    := sd
+    r1_target        := close + sd * 1
+    r2_target        := close + sd * 2
+    r3_target        := close + sd * 3
+    current_stop     := close - sd
+    hwm              := close
+    initial_size     := pos_size
+    active_direction := 1
+    partials_taken   := 0
+    bars_in_trade    := 0
+    long_drop_detected := false
+    array.clear(long_win_close)
+    array.clear(long_win_change)
+
+    if show_r_lines
+        line.new(bar_index, current_stop, bar_index + 40, current_stop, color=color.new(color.red, 40), width=1, style=line.style_dotted)
+        line.new(bar_index, r1_target, bar_index + 40, r1_target, color=color.new(color.green, 50), width=1, style=line.style_dotted)
+        line.new(bar_index, r2_target, bar_index + 40, r2_target, color=color.new(color.green, 40), width=1, style=line.style_dotted)
+        line.new(bar_index, r3_target, bar_index + 40, r3_target, color=color.new(color.lime, 30), width=1, style=line.style_dotted)
+
+    if show_trade_labels
+        label_text = "LONG\n" +
+             "E: $" + str.tostring(close, "#.##") + "\n" +
+             "SL: $" + str.tostring(current_stop, "#.##") + " (-1R)\n" +
+             "1R: $" + str.tostring(r1_target, "#.##") + "\n" +
+             "2R: $" + str.tostring(r2_target, "#.##") + "\n" +
+             "3R: $" + str.tostring(r3_target, "#.##") + "\n" +
+             "Size: " + str.tostring(pos_size, "#.#") + " ($" + str.tostring(risk_amt, "#") + " risk)"
+        label.new(bar_index, close, label_text,
+             color=color.new(color.green, 10), textcolor=color.white,
+             style=label.style_label_up, size=size.normal)
+
+// ============================================================================
+// NEW SHORT ENTRY
+// ============================================================================
+
+if short_entry_signal and active_direction == 0
+    sd_s = atr > 0 ? atr * atr_fixed_mult : close * (fixed_stop_pct_fb / 100)
+    risk_amt_s = account_equity * (risk_pct / 100)
+    pos_size_s = sd_s > 0 ? risk_amt_s / sd_s : 0.0
+
+    active_entry     := close
+    entry_atr_val    := atr
+    stop_distance    := sd_s
+    r1_target        := close - sd_s * 1
+    r2_target        := close - sd_s * 2
+    r3_target        := close - sd_s * 3
+    current_stop     := close + sd_s
+    hwm              := close
+    initial_size     := pos_size_s
+    active_direction := -1
+    partials_taken   := 0
+    bars_in_trade    := 0
+    short_pump_detected := false
+    array.clear(short_win_close)
+    array.clear(short_win_change)
+
+    if show_r_lines
+        line.new(bar_index, current_stop, bar_index + 40, current_stop, color=color.new(color.red, 40), width=1, style=line.style_dotted)
+        line.new(bar_index, r1_target, bar_index + 40, r1_target, color=color.new(color.green, 50), width=1, style=line.style_dotted)
+        line.new(bar_index, r2_target, bar_index + 40, r2_target, color=color.new(color.green, 40), width=1, style=line.style_dotted)
+        line.new(bar_index, r3_target, bar_index + 40, r3_target, color=color.new(color.lime, 30), width=1, style=line.style_dotted)
+
+    if show_trade_labels
+        label_text_s = "SHORT\n" +
+             "E: $" + str.tostring(close, "#.##") + "\n" +
+             "SL: $" + str.tostring(current_stop, "#.##") + " (-1R)\n" +
+             "1R: $" + str.tostring(r1_target, "#.##") + "\n" +
+             "2R: $" + str.tostring(r2_target, "#.##") + "\n" +
+             "3R: $" + str.tostring(r3_target, "#.##") + "\n" +
+             "Size: " + str.tostring(pos_size_s, "#.#") + " ($" + str.tostring(risk_amt_s, "#") + " risk)"
+        label.new(bar_index, close, label_text_s,
+             color=color.new(color.red, 10), textcolor=color.white,
+             style=label.style_label_down, size=size.normal)
+
+// ============================================================================
+// EXIT & PARTIAL LABELS
+// ============================================================================
+
+if show_exit_labels and exit_signal
+    exit_color = exit_pnl_pct >= 0 ? color.new(color.green, 20) : color.new(color.red, 20)
+    exit_text = exit_reason + "\n" +
+         str.tostring(exit_pnl_pct, "+#.#") + "% | " +
+         str.tostring(exit_r_mult, "+#.#") + "R"
+    lbl_style = exit_pnl_pct >= 0 ? label.style_label_down : label.style_label_up
+    label.new(bar_index, close, exit_text, color=exit_color, textcolor=color.white, style=lbl_style, size=size.small)
+
+if show_exit_labels and partial_signal
+    partial_text = "P" + str.tostring(partial_num) + "/3 (30%)\n$" + str.tostring(partial_price, "#.##")
+    p_style = active_direction == 1 ? label.style_label_down : label.style_label_up
+    label.new(bar_index, partial_price, partial_text,
+         color=color.new(color.teal, 20), textcolor=color.white, style=p_style, size=size.tiny)
+
+// ============================================================================
+// PLOT SIGNALS
+// ============================================================================
+
+plotshape(long_entry_signal and active_direction == 1, title="Long Entry", location=location.belowbar, color=color.lime, style=shape.triangleup, size=size.normal)
+plotshape(short_entry_signal and active_direction == -1, title="Short Entry", location=location.abovebar, color=color.fuchsia, style=shape.triangledown, size=size.normal)
+plotshape(exit_signal and exit_pnl_pct >= 0, title="Win Exit", location=location.abovebar, color=color.green, style=shape.xcross, size=size.small)
+plotshape(exit_signal and exit_pnl_pct < 0, title="Loss Exit", location=location.belowbar, color=color.red, style=shape.xcross, size=size.small)
+
+// ============================================================================
+// BACKGROUND — Position + Pattern Watching + Regime
+// ============================================================================
+
+is_watching_rise    = long_drop_detected and active_direction == 0
+is_watching_decline = short_pump_detected and active_direction == 0
+in_long  = active_direction == 1
+in_short = active_direction == -1
+
+// Layer 1: Regime tint (subtle)
+var color regime_bg = na
+if regime_trend == "uptrend"
+    regime_bg := color.new(color.blue, 96)
+else if regime_trend == "downtrend"
+    regime_bg := color.new(color.orange, 96)
+else
+    regime_bg := na
+
+// Layer 2: Position or watching state (overrides regime)
+var color pos_bg = na
+if in_long
+    pos_bg := color.new(color.green, 87)
+else if in_short
+    pos_bg := color.new(color.red, 87)
+else if is_watching_rise
+    pos_bg := color.new(color.yellow, 93)
+else if is_watching_decline
+    pos_bg := color.new(color.purple, 93)
+else
+    pos_bg := regime_bg
+
+bgcolor(pos_bg, title="Background")
+
+// ============================================================================
+// DYNAMIC STOP LINE (step-line, brighter)
+// ============================================================================
+
+var color stop_color = na
+if active_direction == 1
+    stop_color := color.new(color.lime, 0)
+else if active_direction == -1
+    stop_color := color.new(color.fuchsia, 0)
+else
+    stop_color := na
+plot(show_stop_line and active_direction != 0 ? current_stop : na, title="Stop Level", color=stop_color, style=plot.style_stepline, linewidth=3)
+
+// ============================================================================
+// COMBINED DASHBOARD — Rotation style + V18 info + R-status
+// ============================================================================
+
+// Calculate current R-multiple for open position
+var float current_r = 0.0
+if active_direction == 1 and not na(active_entry) and not na(stop_distance) and stop_distance > 0
+    current_r := (close - active_entry) / stop_distance
+else if active_direction == -1 and not na(active_entry) and not na(stop_distance) and stop_distance > 0
+    current_r := (active_entry - close) / stop_distance
+else
+    current_r := 0.0
+
+win_rate = total_trades > 0 ? (winning_trades / total_trades) * 100 : 0.0
+avg_r    = total_trades > 0 ? total_r / total_trades : 0.0
+
+var table dash = table.new(position.top_right, 2, 8, bgcolor=color.new(color.black, 75), border_width=1, border_color=color.new(color.gray, 70))
+
+if barstate.islast
+    // Row 0: Position + R-level
+    string pos_text = "FLAT"
+    if active_direction == 1
+        pos_text := "LONG"
+    else if active_direction == -1
+        pos_text := "SHORT"
+    pos_detail = active_direction != 0 ? pos_text + " (" + str.tostring(bars_in_trade) + " bars)" : pos_text
+    color pos_color = color.gray
+    if active_direction == 1
+        pos_color := color.green
+    else if active_direction == -1
+        pos_color := color.red
+    table.cell(dash, 0, 0, "Pos", text_color=color.white, text_size=size.small)
+    table.cell(dash, 1, 0, pos_detail, text_color=pos_color, text_size=size.small)
+
+    // Row 1: Current R / PnL (if in trade)
+    table.cell(dash, 0, 1, "R", text_color=color.white, text_size=size.small)
+    if active_direction != 0
+        r_color = current_r >= 0 ? color.green : color.red
+        r_text = str.tostring(current_r, "+#.#") + "R | P" + str.tostring(partials_taken) + "/3"
+        table.cell(dash, 1, 1, r_text, text_color=r_color, text_size=size.small)
+    else
+        table.cell(dash, 1, 1, "--", text_color=color.gray, text_size=size.small)
+
+    // Row 2: Stop level
+    table.cell(dash, 0, 2, "Stop", text_color=color.white, text_size=size.small)
+    if active_direction != 0 and not na(current_stop)
+        stop_label_text = "$" + str.tostring(current_stop, "#.##")
+        if partials_taken >= 3
+            stop_label_text := stop_label_text + " (trail)"
+        else if partials_taken >= 2
+            stop_label_text := stop_label_text + " (+1R)"
+        else if partials_taken >= 1
+            stop_label_text := stop_label_text + " (BE)"
+        else
+            stop_label_text := stop_label_text + " (-1R)"
+        table.cell(dash, 1, 2, stop_label_text, text_color=color.yellow, text_size=size.small)
+    else
+        table.cell(dash, 1, 2, "--", text_color=color.gray, text_size=size.small)
+
+    // Row 3: Pattern status
+    table.cell(dash, 0, 3, "Pat", text_color=color.white, text_size=size.small)
+    if long_drop_detected and active_direction == 0
+        long_win_sz = array.size(long_win_close)
+        table.cell(dash, 1, 3, "Rise " + str.tostring(long_win_sz) + "/" + str.tostring(rise_window), text_color=color.yellow, text_size=size.small)
+    else if short_pump_detected and active_direction == 0
+        short_win_sz = array.size(short_win_close)
+        table.cell(dash, 1, 3, "Decline " + str.tostring(short_win_sz) + "/" + str.tostring(rise_window), text_color=color.purple, text_size=size.small)
+    else
+        table.cell(dash, 1, 3, "Scanning", text_color=color.gray, text_size=size.small)
+
+    // Row 4: EMA filter
+    table.cell(dash, 0, 4, "EMA", text_color=color.white, text_size=size.small)
+    ema_text = close > daily_ema ? "ABOVE (long ok)" : "BELOW (short ok)"
+    ema_color = close > daily_ema ? color.green : color.red
+    table.cell(dash, 1, 4, ema_text, text_color=ema_color, text_size=size.small)
+
+    // Row 5: Regime (from rotation logic)
+    table.cell(dash, 0, 5, "Rgm", text_color=color.white, text_size=size.small)
+    color rgm_color = color.gray
+    if regime_trend == "uptrend"
+        rgm_color := color.green
+    else if regime_trend == "downtrend"
+        rgm_color := color.red
+    table.cell(dash, 1, 5, regime_label, text_color=rgm_color, text_size=size.small)
+
+    // Row 6: Strategy rotation recommendation
+    table.cell(dash, 0, 6, "USE", text_color=color.white, text_size=size.small)
+    color use_color = color.gray
+    if rotation_rec == "v8_fast"
+        use_color := color.blue
+    else if rotation_rec == "v18"
+        use_color := color.teal
+    table.cell(dash, 1, 6, rotation_rec, text_color=use_color, text_size=size.normal)
+
+    // Row 7: W/L stats + avg R
+    table.cell(dash, 0, 7, "W/L", text_color=color.white, text_size=size.small)
+    color wr_color = color.red
+    if win_rate >= 50
+        wr_color := color.green
+    else if win_rate >= 40
+        wr_color := color.yellow
+    wl_text = str.tostring(winning_trades) + "/" + str.tostring(losing_trades) + " " + str.tostring(win_rate, "#") + "% | " + str.tostring(avg_r, "+#.##") + "R"
+    table.cell(dash, 1, 7, wl_text, text_color=wr_color, text_size=size.small)
+
+// ============================================================================
+// ALERTS
+// ============================================================================
+
+alertcondition(long_drop_trigger, "V8F Drop Detected", "V8 Fast: Drop detected — watching for rounded bottom (long)")
+alertcondition(short_pump_trigger, "V8F Pump Detected", "V8 Fast: Pump detected — watching for rounded top (short)")
+alertcondition(long_entry_signal, "V8F Long Entry", "V8 Fast: Long entry — rounded bottom confirmed")
+alertcondition(short_entry_signal, "V8F Short Entry", "V8 Fast: Short entry — rounded top confirmed")
+alertcondition(exit_signal, "V8F Exit", "V8 Fast: Position exited")
+alertcondition(partial_signal, "V8F Partial", "V8 Fast: Partial profit taken")

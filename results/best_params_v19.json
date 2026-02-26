@@ -1,0 +1,20 @@
+{
+  "params": {
+    "lookback": 120,
+    "squeeze_pctile": 20,
+    "atr_mult_long": 5.0,
+    "atr_mult_short": 18.0
+  },
+  "metrics": {
+    "optimizer_score": 1.76,
+    "final_value": 1.76,
+    "total_return_pct": 142.72976125323362,
+    "total_trades": 25,
+    "trades_per_day": null,
+    "win_rate_pct": 52.0,
+    "max_drawdown_pct": 10.860388467607809,
+    "sharpe_ratio": 0
+  },
+  "trial_number": 73,
+  "timestamp": "2026-02-19T06:38:23.526297"
+}

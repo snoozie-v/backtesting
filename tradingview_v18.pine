@@ -34,18 +34,8 @@ show_trail_stop   = input.bool(true, "Show Trailing Stop Line")
 show_trade_labels = input.bool(true, "Show Trade Plan Labels")
 show_exit_labels  = input.bool(true, "Show Exit Labels")
 
-// Regime Filter (defaults from multi-asset backtest: SOL+BTC+ETH, 839 trades)
-// v18 works when volatility is high, regardless of trend direction
-use_regime_filter      = input.bool(true,  "Enable Regime Filter")
-allow_uptrend_high     = input.bool(true,  "Allow: Uptrend + High Vol")
-allow_uptrend_normal   = input.bool(false, "Allow: Uptrend + Normal Vol")
-allow_uptrend_low      = input.bool(false, "Allow: Uptrend + Low Vol")
-allow_downtrend_high   = input.bool(true,  "Allow: Downtrend + High Vol")
-allow_downtrend_normal = input.bool(false, "Allow: Downtrend + Normal Vol")
-allow_downtrend_low    = input.bool(false, "Allow: Downtrend + Low Vol")
-allow_ranging_high     = input.bool(true,  "Allow: Ranging + High Vol")
-allow_ranging_normal   = input.bool(false, "Allow: Ranging + Normal Vol")
-allow_ranging_low      = input.bool(false, "Allow: Ranging + Low Vol")
+// Regime Filter — blocks counter-trend entries (long in downtrend, short in uptrend)
+use_regime_filter      = input.bool(true,  "Enable Trend Filter")
 
 // ============================================================================
 // DONCHIAN CHANNEL
@@ -86,17 +76,9 @@ regime_vol = atr_pct_rank > 75 ? "high_vol" : atr_pct_rank < 25 ? "low_vol" : "n
 
 regime_label = regime_trend + "_" + regime_vol
 
-// Regime filter: is current regime allowed for entries?
-regime_allowed = not use_regime_filter or (
-     (regime_trend == "uptrend"   and regime_vol == "high_vol"   and allow_uptrend_high) or
-     (regime_trend == "uptrend"   and regime_vol == "normal_vol" and allow_uptrend_normal) or
-     (regime_trend == "uptrend"   and regime_vol == "low_vol"    and allow_uptrend_low) or
-     (regime_trend == "downtrend" and regime_vol == "high_vol"   and allow_downtrend_high) or
-     (regime_trend == "downtrend" and regime_vol == "normal_vol" and allow_downtrend_normal) or
-     (regime_trend == "downtrend" and regime_vol == "low_vol"    and allow_downtrend_low) or
-     (regime_trend == "ranging"   and regime_vol == "high_vol"   and allow_ranging_high) or
-     (regime_trend == "ranging"   and regime_vol == "normal_vol" and allow_ranging_normal) or
-     (regime_trend == "ranging"   and regime_vol == "low_vol"    and allow_ranging_low))
+// Counter-trend filter: block longs in downtrend, shorts in uptrend
+long_allowed  = not use_regime_filter or regime_trend != "downtrend"
+short_allowed = not use_regime_filter or regime_trend != "uptrend"
 
 // ============================================================================
 // ENTRY SIGNALS (Breakout: close vs previous bar's channel)
@@ -243,7 +225,7 @@ blocked_short   := false
 
 // Long entry
 if long_breakout and active_direction == 0 and atr > 0
-    if regime_allowed
+    if long_allowed
         active_entry     := close
         active_direction := 1
         active_atr       := atr
@@ -265,11 +247,11 @@ if long_breakout and active_direction == 0 and atr > 0
         blocked_long := true
         blocked_trades += 1
         if show_trade_labels
-            label.new(bar_index, low, "BLOCKED\n" + regime_label, color=color.new(color.gray, 30), textcolor=color.white, style=label.style_label_up, size=size.tiny)
+            label.new(bar_index, low, "BLOCKED LONG\ndowntrend", color=color.new(color.gray, 30), textcolor=color.white, style=label.style_label_up, size=size.tiny)
 
 // Short entry
 if short_breakout and active_direction == 0 and atr > 0
-    if regime_allowed
+    if short_allowed
         active_entry     := close
         active_direction := -1
         active_atr       := atr
@@ -291,7 +273,7 @@ if short_breakout and active_direction == 0 and atr > 0
         blocked_short := true
         blocked_trades += 1
         if show_trade_labels
-            label.new(bar_index, high, "BLOCKED\n" + regime_label, color=color.new(color.gray, 30), textcolor=color.white, style=label.style_label_down, size=size.tiny)
+            label.new(bar_index, high, "BLOCKED SHORT\nuptrend", color=color.new(color.gray, 30), textcolor=color.white, style=label.style_label_down, size=size.tiny)
 
 // ============================================================================
 // EXIT LABELS
@@ -323,11 +305,9 @@ plotshape(exit_short_signal, title="Short Trail Stop", location=location.belowba
 plotshape(blocked_long, title="Blocked Long", location=location.belowbar, color=color.gray, style=shape.circle, size=size.tiny)
 plotshape(blocked_short, title="Blocked Short", location=location.abovebar, color=color.gray, style=shape.circle, size=size.tiny)
 
-// Regime Background (subtle tint for current regime)
+// Regime Background (subtle tint for current trend)
 var color regime_bg = na
-if not regime_allowed
-    regime_bg := color.new(color.gray, 92)
-else if regime_trend == "uptrend"
+if regime_trend == "uptrend"
     regime_bg := color.new(color.blue, 95)
 else if regime_trend == "downtrend"
     regime_bg := color.new(color.orange, 95)
@@ -348,12 +328,6 @@ plot(show_trail_stop and active_direction != 0 ? active_trail_stop : na, title="
 
 win_rate = total_trades > 0 ? (winning_trades / total_trades) * 100 : 0.0
 
-// Count allowed regimes for filter status display
-up_count = (allow_uptrend_high ? 1 : 0) + (allow_uptrend_normal ? 1 : 0) + (allow_uptrend_low ? 1 : 0)
-down_count = (allow_downtrend_high ? 1 : 0) + (allow_downtrend_normal ? 1 : 0) + (allow_downtrend_low ? 1 : 0)
-range_count = (allow_ranging_high ? 1 : 0) + (allow_ranging_normal ? 1 : 0) + (allow_ranging_low ? 1 : 0)
-allowed_count = up_count + down_count + range_count
-
 var table info = table.new(position.top_right, 2, 6, bgcolor=color.new(color.black, 80))
 if barstate.islast
     table.cell(info, 0, 0, "Pos", text_color=color.white)
@@ -371,12 +345,12 @@ if barstate.islast
     wr_color = win_rate >= 40 ? color.green : win_rate >= 30 ? color.yellow : color.red
     table.cell(info, 1, 3, str.tostring(winning_trades) + "/" + str.tostring(losing_trades) + " " + str.tostring(win_rate, "#") + "%", text_color=wr_color)
 
-    table.cell(info, 0, 4, "Rgm", text_color=color.white)
+    table.cell(info, 0, 4, "Trend", text_color=color.white)
     regime_color = regime_trend == "uptrend" ? color.green : regime_trend == "downtrend" ? color.red : color.gray
-    table.cell(info, 1, 4, regime_allowed ? regime_label : "BLOCKED", text_color=regime_allowed ? regime_color : color.gray)
+    table.cell(info, 1, 4, regime_label, text_color=regime_color)
 
     table.cell(info, 0, 5, "Flt", text_color=color.white)
-    filter_text = use_regime_filter ? str.tostring(allowed_count) + "/9 " + str.tostring(blocked_trades) + "blk" : "OFF"
+    filter_text = use_regime_filter ? str.tostring(blocked_trades) + " blocked" : "OFF"
     table.cell(info, 1, 5, filter_text, text_color=use_regime_filter ? color.yellow : color.gray)
 
 // ============================================================================

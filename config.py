@@ -47,6 +47,9 @@ class DataConfig:
     yfinance_15m: str = "data/sol_usd_15m.csv"
     daily: str = "data/sol_usdt_1d.csv"
 
+    # BTC 15m data (used by V20 for cross-asset pattern detection)
+    btc_15m: str = "data/btc_usd_15m_binance.csv"
+
     @property
     def binance_15m(self) -> str:
         """Get data file path based on active asset."""
@@ -90,41 +93,50 @@ V8_PARAMS = {
 
 # SOL-optimized params
 V8_FAST_SOL_PARAMS = {
-    "atr_fixed_mult": 2.7,
-    "atr_period": 16,
-    "atr_trailing_mult": 4.3,
-    "daily_ema_period": 7,
-    "drop_window": 115,
-    "fixed_stop_pct": 5.5,
-    "max_single_down_bar": -6.0,
-    "max_single_up_bar": 11.5,
-    "min_drop_pct": 11.0,
-    "min_rise_pct": 4.25,
-    "min_up_bars_ratio": 0.4,
-    "rise_window": 80,
-    "trailing_pct": 7.5,
+    # 8 tunable (walk-forward validated, nested WF optimizer Trial #10)
+    "atr_fixed_mult": 3.0,
+    "atr_trailing_mult": 3.9,
+    "daily_ema_period": 6,
+    "drop_window": 120,
+    "min_drop_pct": 13.0,
+    "min_rise_pct": 3.5,
+    "min_up_bars_ratio": 0.25,
+    "rise_window": 75,
+    # 6 hardcoded (low importance)
+    "atr_period": 14,
+    "max_single_down_bar": -5.0,
+    "max_single_up_bar": 10.0,
+    "fixed_stop_pct": 4.0,
+    "trailing_pct": 6.0,
     "volume_confirm": False,
     "risk_per_trade_pct": 3.0,
 }
 
-# VET-optimized params (Trial #46)
-V8_FAST_VET_PARAMS = {
-    "atr_fixed_mult": 2.9,
-    "atr_period": 22,
-    "atr_trailing_mult": 5.0,
+# BTC-optimized params (nested WF optimizer Trial #13, walk-forward FAIR: +19.6% OOS, 61% WR)
+V8_FAST_BTC_PARAMS = {
+    # 8 tunable
+    "atr_fixed_mult": 2.2,
+    "atr_trailing_mult": 3.8,
     "daily_ema_period": 4,
-    "drop_window": 90,
-    "fixed_stop_pct": 6.0,
-    "max_single_down_bar": -5.0,
-    "max_single_up_bar": 12.0,
+    "drop_window": 95,
     "min_drop_pct": 12.5,
-    "min_rise_pct": 2.5,
-    "min_up_bars_ratio": 0.3,
-    "rise_window": 85,
-    "trailing_pct": 9.5,
+    "min_rise_pct": 3.0,
+    "min_up_bars_ratio": 0.35,
+    "rise_window": 70,
+    # 6 hardcoded (low importance)
+    "atr_period": 14,
+    "max_single_down_bar": -5.0,
+    "max_single_up_bar": 10.0,
+    "fixed_stop_pct": 4.0,
+    "trailing_pct": 6.0,
     "volume_confirm": False,
     "risk_per_trade_pct": 3.0,
 }
+
+# VET/ETH — walk-forward FAIL, not recommended for v8_fast
+# Kept for reference only
+V8_FAST_VET_PARAMS = V8_FAST_SOL_PARAMS  # Placeholder, don't trade v8_fast on VET
+V8_FAST_ETH_PARAMS = V8_FAST_SOL_PARAMS  # Placeholder, don't trade v8_fast on ETH
 
 # Default V8_FAST params (currently using SOL-optimized)
 V8_FAST_OPTIMIZED_PARAMS = V8_FAST_SOL_PARAMS
@@ -387,10 +399,36 @@ V17_PARAMS = {
 
 # V18 - Donchian Channel Breakout (2 params only)
 V18_PARAMS = {
-    "channel_period": 90,      # 1H bars lookback (~3.75 days)
-    "atr_trail_mult": 6.0,     # ATR trailing stop multiplier
+    "channel_period": 30,      # 1H bars lookback (~1.25 days)
+    "atr_trail_mult": 6.75,    # ATR trailing stop multiplier
     "atr_period": 14,          # ATR calc period on 1H (fixed)
     "risk_per_trade_pct": 3.0, # Risk 3% of account at stop loss
+}
+
+# V19 - Volatility Squeeze Breakout (4 params — separate long/short atr_mult)
+# WF Trial #73: avg_r=1.76 OOS, +143% OOS return, 52% WR, 10.9% DD, 25 OOS trades
+# WARNING: atr_mult_short=18.0 AT CEILING (18.0) — extended to 28.0, re-run needed
+# WARNING: 25 OOS trades is statistically thin — treat WF result with caution
+# NOTE: OOS > IS (1.76 vs 0.76) likely due to favorable OOS bear period, not skill
+V19_PARAMS = {
+    "lookback": 120,            # ATR percentile rank lookback (1H bars)
+    "squeeze_pctile": 20,       # Percentile threshold to qualify as squeeze
+    "atr_mult_long": 5.0,       # Long 1R/trail
+    "atr_mult_short": 18.0,     # Short 1R/trail — AT CEILING, true optimum unknown
+    "atr_period": 14,           # ATR calc period on 1H (fixed)
+    "risk_per_trade_pct": 3.0,  # Risk 3% of account at stop loss
+}
+
+# V20 - Short-Only Double Top & Head and Shoulders
+V20_PARAMS = {
+    "swing_lookback": 5,           # Bars each side to confirm swing pivot
+    "top_tolerance": 0.03,         # Max % diff between tops/shoulders
+    "atr_stop_mult": 2.5,          # ATR buffer above pattern high for stop
+    "atr_trail_mult": 3.0,         # ATR trail mult for runner
+    "atr_period": 14,              # ATR calc period on 4H (fixed)
+    "risk_per_trade_pct": 3.0,     # Risk 3% of account at stop loss
+    "min_pattern_bars": 10,        # Min bars for double top pattern
+    "min_hs_bars": 15,             # Min bars for H&S pattern
 }
 
 V16_PARAMS = {
@@ -551,6 +589,8 @@ V13_PARAMS = {
 
 # Map strategy names to their parameter sets
 STRATEGY_PARAMS: Dict[str, Dict[str, Any]] = {
+    "v20": V20_PARAMS,
+    "v19": V19_PARAMS,
     "v18": V18_PARAMS,
     "v17": V17_PARAMS,
     "v16": V16_PARAMS,
@@ -570,7 +610,9 @@ STRATEGY_PARAMS: Dict[str, Dict[str, Any]] = {
     "v8": V8_PARAMS,
     "v8_fast": V8_FAST_OPTIMIZED_PARAMS,
     "v8_fast_sol": V8_FAST_SOL_PARAMS,
+    "v8_fast_btc": V8_FAST_BTC_PARAMS,
     "v8_fast_vet": V8_FAST_VET_PARAMS,
+    "v8_fast_eth": V8_FAST_ETH_PARAMS,
     "v8_baseline": V8_BASELINE_PARAMS,
     "v7": V7_PARAMS,
     "v6": V6_PARAMS,
@@ -599,8 +641,12 @@ def register_strategies():
     from strategies.sol_strategy_v16 import SolStrategyV16
     from strategies.sol_strategy_v17 import SolStrategyV17
     from strategies.sol_strategy_v18 import SolStrategyV18
+    from strategies.sol_strategy_v19 import SolStrategyV19
+    from strategies.sol_strategy_v20 import SolStrategyV20
 
     STRATEGY_CLASSES.update({
+        "v20": SolStrategyV20,
+        "v19": SolStrategyV19,
         "v18": SolStrategyV18,
         "v17": SolStrategyV17,
         "v16": SolStrategyV16,
@@ -622,8 +668,10 @@ def register_strategies():
         "v7": SolStrategyV7,
         "v8": SolStrategyV8,
         "v8_fast": SolStrategyV8Fast,
-        "v8_fast_sol": SolStrategyV8Fast,  # Same class, SOL-optimized params
-        "v8_fast_vet": SolStrategyV8Fast,  # Same class, VET-optimized params
+        "v8_fast_sol": SolStrategyV8Fast,
+        "v8_fast_btc": SolStrategyV8Fast,
+        "v8_fast_vet": SolStrategyV8Fast,
+        "v8_fast_eth": SolStrategyV8Fast,
         "v8_baseline": SolStrategyV8,
     })
     return STRATEGY_CLASSES

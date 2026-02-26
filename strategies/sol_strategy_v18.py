@@ -17,17 +17,22 @@ Risk Model:
 - 1R = ATR * atr_trail_mult (initial trailing distance)
 - Stop ratchets: breakeven at 1R, +1R at 2R, +2R at 3R
 
+Regime Filter:
+- Blocks counter-trend entries (long in downtrend, short in uptrend)
+- Uses daily EMA for trend classification via MarketRegime
+
 Data feeds (expected index order):
   0 -> 15m (base, exit checking every bar)
   1 -> 1h (entry signals, channel, ATR)
-  2 -> 4h (unused)
+  2 -> 4h (volatility regime)
   3 -> weekly (unused)
-  4 -> daily (unused)
+  4 -> daily (trend regime)
 """
 
 import backtrader as bt
 import backtrader.indicators as btind
 from risk_manager import RiskManager
+from regime import MarketRegime
 
 
 class SolStrategyV18(bt.Strategy):
@@ -45,6 +50,11 @@ class SolStrategyV18(bt.Strategy):
         # Data feeds
         self.data15 = self.datas[0]   # 15m: exit checking every bar
         self.data1h = self.datas[1]   # 1h: entry signals, channel, ATR
+        self.data4h = self.datas[2]   # 4h: volatility regime
+        self.data_daily = self.datas[4]  # daily: trend regime
+
+        # Regime classifier — block counter-trend entries
+        self.regime = MarketRegime(self.data_daily, self.data4h)
 
         # 1H Indicators
         self.channel_high = btind.Highest(self.data1h.high, period=self.p.channel_period)
@@ -96,12 +106,24 @@ class SolStrategyV18(bt.Strategy):
         if atr <= 0:
             return
 
+        # Get trend regime — block counter-trend entries
+        trend = None
+        try:
+            regime_info = self.regime.classify()
+            trend = regime_info.get('trend')
+        except Exception:
+            pass
+
         # Long breakout: 1H close > previous bar's channel high
         if close_1h > prev_channel_high:
             if self.position_type == 'short':
                 self._close_position("REVERSAL TO LONG")
             if not self.position:
-                self._enter_long(close_1h, atr)
+                if trend == 'downtrend':
+                    dt = self.data15.datetime.datetime(0)
+                    print(f"[{dt}] BLOCKED LONG — counter-trend (downtrend)")
+                else:
+                    self._enter_long(close_1h, atr, regime_info=regime_info)
             return
 
         # Short breakout: 1H close < previous bar's channel low
@@ -109,10 +131,14 @@ class SolStrategyV18(bt.Strategy):
             if self.position_type == 'long':
                 self._close_position("REVERSAL TO SHORT")
             if not self.position:
-                self._enter_short(close_1h, atr)
+                if trend == 'uptrend':
+                    dt = self.data15.datetime.datetime(0)
+                    print(f"[{dt}] BLOCKED SHORT — counter-trend (uptrend)")
+                else:
+                    self._enter_short(close_1h, atr, regime_info=regime_info)
             return
 
-    def _enter_long(self, price, atr):
+    def _enter_long(self, price, atr, regime_info=None):
         """Enter long position with R-based sizing."""
         equity = self.broker.getvalue()
         self.stop_distance = atr * self.p.atr_trail_mult
@@ -140,12 +166,14 @@ class SolStrategyV18(bt.Strategy):
 
         risk_amt = equity * self.risk_mgr.risk_pct
         dt = self.data15.datetime.datetime(0)
+        regime_tag = regime_info.get('regime', 'unknown') if regime_info else 'unknown'
         print(f"[{dt}] LONG @ {price:.2f} | "
               f"Size: {size:.4f} | Risk: ${risk_amt:.0f} ({self.p.risk_per_trade_pct}%) | "
               f"Stop: {self.current_stop:.2f} (-1R) | "
               f"1R: {self.r_targets.get(1.0, 0):.2f} | "
               f"2R: {self.r_targets.get(2.0, 0):.2f} | "
-              f"3R: {self.r_targets.get(3.0, 0):.2f}")
+              f"3R: {self.r_targets.get(3.0, 0):.2f} | "
+              f"Regime: {regime_tag}")
 
         # Snapshot market context for trade journal
         ch_width = self.channel_high[0] - self.channel_low[0]
@@ -157,9 +185,10 @@ class SolStrategyV18(bt.Strategy):
             "stop_distance": round(self.stop_distance, 4),
             "risk_pct": self.p.risk_per_trade_pct,
             "position_size": round(size, 4),
+            "regime": regime_tag,
         }
 
-    def _enter_short(self, price, atr):
+    def _enter_short(self, price, atr, regime_info=None):
         """Enter short position with R-based sizing."""
         equity = self.broker.getvalue()
         self.stop_distance = atr * self.p.atr_trail_mult
@@ -187,12 +216,14 @@ class SolStrategyV18(bt.Strategy):
 
         risk_amt = equity * self.risk_mgr.risk_pct
         dt = self.data15.datetime.datetime(0)
+        regime_tag = regime_info.get('regime', 'unknown') if regime_info else 'unknown'
         print(f"[{dt}] SHORT @ {price:.2f} | "
               f"Size: {size:.4f} | Risk: ${risk_amt:.0f} ({self.p.risk_per_trade_pct}%) | "
               f"Stop: {self.current_stop:.2f} (-1R) | "
               f"1R: {self.r_targets.get(1.0, 0):.2f} | "
               f"2R: {self.r_targets.get(2.0, 0):.2f} | "
-              f"3R: {self.r_targets.get(3.0, 0):.2f}")
+              f"3R: {self.r_targets.get(3.0, 0):.2f} | "
+              f"Regime: {regime_tag}")
 
         # Snapshot market context for trade journal
         ch_width = self.channel_high[0] - self.channel_low[0]
@@ -204,6 +235,7 @@ class SolStrategyV18(bt.Strategy):
             "stop_distance": round(self.stop_distance, 4),
             "risk_pct": self.p.risk_per_trade_pct,
             "position_size": round(size, 4),
+            "regime": regime_tag,
         }
 
     def _check_exits(self):

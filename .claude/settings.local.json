@@ -18,7 +18,8 @@
       "Bash(git stash:*)",
       "Bash(while ps aux:*)",
       "Bash(do sleep 60)",
-      "Bash(done)"
+      "Bash(done)",
+      "Bash(ACTIVE_ASSET=BTC python backtest.py:*)"
     ]
   }
 }

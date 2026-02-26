@@ -66,9 +66,13 @@ def load_data(source: str = "binance", timeframe: str = "15m"):
     return df
 
 
-def setup_cerebro_multi_tf(df, strategy_class, params, cash=None, commission=None):
+def setup_cerebro_multi_tf(df, strategy_class, params, cash=None, commission=None, btc_df=None):
     """
-    Set up cerebro with multi-timeframe data (for V6, V7, V8).
+    Set up cerebro with multi-timeframe data (for V6, V7, V8, etc.).
+
+    Args:
+        btc_df: Optional BTC 15m DataFrame. Added as raw feed at datas[5] for
+                cross-asset pattern detection (used by V20).
 
     Returns:
         cerebro instance ready to run
@@ -102,6 +106,11 @@ def setup_cerebro_multi_tf(df, strategy_class, params, cash=None, commission=Non
                          compression=1,
                          bar2edge=True,
                          rightedge=True)
+
+    # Add BTC 15m as raw feed at datas[5] if provided
+    if btc_df is not None:
+        btc_data = bt.feeds.PandasData(dataname=btc_df)
+        cerebro.adddata(btc_data, name='btc_15m')
 
     cerebro.addstrategy(strategy_class, **params)
 
@@ -316,11 +325,23 @@ def run_backtest(
                 self._entry_context = None  # Reset for next trade
                 self._max_pos_size = 0  # Reset for next trade
 
+    # Load BTC data for V20 (cross-asset pattern detection)
+    btc_df = None
+    if strategy_name == "v20":
+        btc_df = pd.read_csv(DATA.btc_15m, parse_dates=True, index_col=DATA.binance_timestamp_col)
+        if start_date:
+            btc_df = btc_df[btc_df.index >= start_date]
+        if end_date:
+            btc_end_ts = pd.Timestamp(end_date) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+            btc_df = btc_df[btc_df.index <= btc_end_ts]
+        if verbose:
+            print(f"BTC 15m data: {len(btc_df)} bars loaded for pattern detection")
+
     # Set up cerebro with wrapper
     if is_single_tf:
         cerebro = setup_cerebro_single_tf(df, StrategyWrapper, params)
     else:
-        cerebro = setup_cerebro_multi_tf(df, StrategyWrapper, params)
+        cerebro = setup_cerebro_multi_tf(df, StrategyWrapper, params, btc_df=btc_df)
 
     starting_value = cerebro.broker.getvalue()
 
@@ -600,7 +621,7 @@ def run_compare_all(
     """
     if strategies is None:
         # Use primary strategies only (skip asset-specific variants and baselines)
-        strategies = ["v3", "v6", "v7", "v8", "v8_fast", "v9", "v11", "v13", "v14", "v15", "v16", "v17"]
+        strategies = ["v3", "v6", "v7", "v8", "v8_fast", "v9", "v11", "v13", "v14", "v15", "v16", "v17", "v18", "v19"]
 
     if verbose:
         print(f"\nComparing {len(strategies)} strategies head-to-head")
@@ -668,7 +689,7 @@ Examples:
     parser.add_argument(
         "--strategy", "-s",
         default="v8",
-        choices=["v3", "v6", "v7", "v8", "v8_fast", "v8_fast_sol", "v8_fast_vet", "v8_baseline", "v9", "v9_baseline", "v9_universal", "v9_sol", "v9_vet", "v11", "v13", "v14", "v15", "v15_baseline", "v15_sol", "v15_btc", "v15_eth", "v16", "v17", "v18"],
+        choices=["v3", "v6", "v7", "v8", "v8_fast", "v8_fast_sol", "v8_fast_vet", "v8_baseline", "v9", "v9_baseline", "v9_universal", "v9_sol", "v9_vet", "v11", "v13", "v14", "v15", "v15_baseline", "v15_sol", "v15_btc", "v15_eth", "v16", "v17", "v18", "v19", "v20"],
         help="Strategy to run (default: v8)"
     )
 
@@ -711,8 +732,8 @@ Examples:
     parser.add_argument(
         "--metric",
         default="final_value",
-        choices=["final_value", "sharpe", "return", "win_rate", "expectancy"],
-        help="Metric to optimize (default: final_value, use expectancy for v15)"
+        choices=["final_value", "sharpe", "return", "win_rate", "expectancy", "r_expectancy"],
+        help="Metric to optimize (default: final_value, use r_expectancy for R-based strategies)"
     )
 
     # Result management
