@@ -5,6 +5,14 @@ tf_secs  = timeframe.in_seconds()
 valid_tf = tf_secs >= 15 * 60 and tf_secs <= 60 * 60   // 15M to 1H only for signals
 
 // ============================================================================
+// ADAPTIVE PRICE FORMATTER
+// ============================================================================
+// Uses the symbol's own minimum tick size so DOGE gets 6dp, BTC gets 2dp,
+// SHIB gets 8dp, etc. — automatically correct for any asset.
+f_fmt(float v) =>
+    str.tostring(v, format.mintick)
+
+// ============================================================================
 // STRATEGY NOTES
 // ============================================================================
 // V19 Volatility Squeeze Breakout — Long + Short with direction toggle.
@@ -13,11 +21,10 @@ valid_tf = tf_secs >= 15 * 60 and tf_secs <= 60 * 60   // 15M to 1H only for sig
 // - Long  when squeeze ends AND close > squeeze_high
 // - Short when squeeze ends AND close < squeeze_low
 //
-// LONG  params (lookback=102, pctile=25, atr_mult=3.25) — WALK-FORWARD VALIDATED
-//   avg_r=+0.49, 44% win rate, 120 trades, +88% OOS return
-// SHORT params (atr_mult=7.25, same lookback/pctile) — PARTIALLY VALIDATED
-//   Trial 21 from a 43-trial run that crashed. Shorts need wider ATR stops on SOL.
-//   Re-run a full short-only optimization before live trading.
+// params (lookback=102, pctile=35, atr_mult=5.0 both, early_be_trig=0.75, early_be_dest=-0.5)
+// WALK-FORWARD VALIDATED 2026-02-27
+//   IS:  +10.2%, 90 trades, 52% win rate, 29.4% max DD (2021-01–2023-05)
+//   OOS: +30.5%, 48 trades, 50% win rate, 30.4% max DD (2023-05–2026-01)
 //
 // Regime filter: allows high_vol + normal_vol (normal_vol uses 0.75x atr_mult)
 // Exits: 30% at 1R, 30% at 2R, 30% at 3R, ATR trail on 10% runner
@@ -34,16 +41,21 @@ enable_shorts = input.bool(true,  "Enable Short Entries", group="Direction")
 
 // --- Squeeze Detection (shared for both directions) ---
 lookback       = input.int(102,  "ATR Percentile Lookback (bars)", minval=30, step=6,  group="Squeeze Detection")
-squeeze_pctile = input.int(25,   "Squeeze Percentile Threshold",   minval=5,  step=5,  group="Squeeze Detection")
+squeeze_pctile = input.int(35,   "Squeeze Percentile Threshold",   minval=5,  step=5,  group="Squeeze Detection")
 
 // --- Long Params (walk-forward validated) ---
-atr_mult_long  = input.float(3.25, "ATR Multiplier — Long (1R / Trail)",  minval=1.0, step=0.25, group="Long Params (validated)")
+atr_mult_long  = input.float(5.0,  "ATR Multiplier — Long (1R / Trail)",  minval=1.0, step=0.25, group="Long Params (validated)")
 
 // --- Short Params ---
-atr_mult_short = input.float(7.25, "ATR Multiplier — Short (1R / Trail)", minval=1.0, step=0.25, group="Short Params (partial)")
+atr_mult_short = input.float(5.0,  "ATR Multiplier — Short (1R / Trail)", minval=1.0, step=0.25, group="Short Params (validated)")
 
 // --- ATR (Fixed) ---
 atr_period = input.int(14, "ATR Period", group="ATR")
+
+// --- Early Stop Management ---
+use_early_be  = input.bool(true,  "Enable Early Stop Move",                                                      group="Early Stop Management")
+early_be_trig = input.float(0.75, "Trigger (fraction of 1R)",  minval=0.1, maxval=0.99, step=0.05,              group="Early Stop Management", tooltip="Price must reach this fraction of 1R before the stop moves. 0.5 = halfway to your 1R target.")
+early_be_dest = input.float(-0.5, "Stop destination (R units)", minval=-0.99, maxval=0.0, step=0.05,            group="Early Stop Management", tooltip="Where the stop moves to. 0 = breakeven (entry). -0.5 = halfway between entry and initial stop, keeping some buffer.")
 
 // --- EMA Overlays ---
 show_emas        = input.bool(true,  "Show EMA Lines",              group="EMA Overlays")
@@ -52,8 +64,7 @@ ema_fast_len     = input.int(21,   "Fast EMA Length",   minval=1,   group="EMA O
 ema_mid_len      = input.int(50,   "Mid EMA Length",    minval=1,   group="EMA Overlays")
 ema_slow_len     = input.int(200,  "Slow EMA Length",   minval=1,   group="EMA Overlays")
 show_ema_ribbon  = input.bool(true,  "Show EMA Ribbon Fill",        group="EMA Overlays")
-ema_htf          = input.timeframe("D", "Higher TF EMA Source (Daily by default)", group="EMA Overlays")
-show_htf_ema     = input.bool(true,  "Show Daily EMA 200 (HTF)",    group="EMA Overlays")
+
 show_ema_crosses = input.bool(true,  "Show EMA Cross Labels",       group="EMA Overlays")
 
 // --- Anchored VWAP ---
@@ -61,11 +72,18 @@ show_vwap       = input.bool(true, "Show VWAP",            group="VWAP")
 show_vwap_bands = input.bool(true, "Show VWAP ± 1σ / 2σ", group="VWAP")
 
 // --- Display ---
-show_squeeze      = input.bool(true, "Show Squeeze Range",      group="Display")
-show_trail_stop   = input.bool(true, "Show Trailing Stop Line", group="Display")
-show_trade_labels = input.bool(true, "Show Trade Plan Labels",  group="Display")
-show_exit_labels  = input.bool(true, "Show Exit Labels",        group="Display")
+show_squeeze      = input.bool(true, "Show Squeeze Range",          group="Display")
+show_trail_stop   = input.bool(true, "Show Trailing Stop Line",     group="Display")
+show_trade_labels = input.bool(true, "Show Trade Plan Labels",      group="Display")
+show_exit_labels  = input.bool(true, "Show Exit Labels",            group="Display")
 show_sq_duration  = input.bool(true, "Show Squeeze Duration Label", group="Display")
+show_entry_arrows = input.bool(true, "Show Entry Arrows",           group="Display")
+show_exit_markers = input.bool(true, "Show Exit Markers",           group="Display")
+show_blocked_dots = input.bool(true, "Show Blocked Entry Dots",     group="Display")
+
+// --- Alerts ---
+alert_squeeze_events = input.bool(false, "Alert: Squeeze Start / End", group="Alerts")
+alert_blocked        = input.bool(false, "Alert: Blocked Entries",     group="Alerts")
 
 // --- Regime Filter ---
 use_regime_filter      = input.bool(true,  "Enable Regime Filter",          group="Regime Filter")
@@ -88,7 +106,7 @@ ema_mid  = ta.ema(ema_src, ema_mid_len)
 ema_slow = ta.ema(ema_src, ema_slow_len)
 
 // Higher timeframe EMA 200 (Daily by default)
-htf_ema200 = request.security(syminfo.tickerid, ema_htf, ta.ema(close, 200), lookahead=barmerge.lookahead_off)
+
 
 // EMA slope direction (used for coloring)
 ema_fast_rising = ema_fast > ema_fast[3]
@@ -248,6 +266,7 @@ var float r3_target  = na
 var float stop_dist  = na
 var int   partials   = 0
 var float ratchet_stop = na
+var bool  be_locked    = false   // true once early stop move has fired for this trade
 
 var int total_trades   = 0
 var int winning_trades = 0
@@ -292,6 +311,13 @@ exit_reason      := ""
 
 // --- Long exits ---
 if active_direction == 1
+    // Early stop move — fires once, before any partial, when price reaches the trigger fraction of 1R
+    if use_early_be and not be_locked and partials == 0 and not na(stop_dist)
+        if high >= active_entry + stop_dist * early_be_trig
+            ratchet_stop      := active_entry + stop_dist * early_be_dest
+            active_trail_stop := ratchet_stop
+            be_locked         := true
+
     if partials < 1 and not na(r1_target) and high >= r1_target
         partials      := 1
         ratchet_stop  := active_entry
@@ -305,11 +331,11 @@ if active_direction == 1
         ratchet_stop  := active_entry + (stop_dist * 2)
         active_trail_stop := ratchet_stop
 
-    if close <= active_trail_stop
-        exit_pnl_pct := ((close - active_entry) / active_entry) * 100
+    if low <= active_trail_stop
+        exit_pnl_pct := ((active_trail_stop - active_entry) / active_entry) * 100
         exit_reason  := partials == 0 ? "STOP (-1R)" : partials >= 3 ? "RUNNER TRAIL (+" + str.tostring(partials) + "R)" : "ATR TRAIL (after " + str.tostring(partials) + "R)"
         total_trades  += 1
-        if close > active_entry
+        if active_trail_stop > active_entry
             winning_trades += 1
         else
             losing_trades  += 1
@@ -327,9 +353,17 @@ if active_direction == 1
         stop_dist   := na
         partials    := 0
         ratchet_stop := na
+        be_locked    := false
 
 // --- Short exits ---
 if active_direction == -1
+    // Early stop move — fires once, before any partial, when price reaches the trigger fraction of 1R
+    if use_early_be and not be_locked and partials == 0 and not na(stop_dist)
+        if low <= active_entry - stop_dist * early_be_trig
+            ratchet_stop      := active_entry - stop_dist * early_be_dest
+            active_trail_stop := ratchet_stop
+            be_locked         := true
+
     if partials < 1 and not na(r1_target) and low <= r1_target
         partials      := 1
         ratchet_stop  := active_entry
@@ -343,11 +377,11 @@ if active_direction == -1
         ratchet_stop  := active_entry - (stop_dist * 2)
         active_trail_stop := ratchet_stop
 
-    if close >= active_trail_stop
-        exit_pnl_pct := ((active_entry - close) / active_entry) * 100
+    if high >= active_trail_stop
+        exit_pnl_pct := ((active_entry - active_trail_stop) / active_entry) * 100
         exit_reason  := partials == 0 ? "STOP (-1R)" : partials >= 3 ? "RUNNER TRAIL (+" + str.tostring(partials) + "R)" : "ATR TRAIL (after " + str.tostring(partials) + "R)"
         total_trades  += 1
-        if close < active_entry
+        if active_trail_stop < active_entry
             winning_trades += 1
         else
             losing_trades  += 1
@@ -365,6 +399,7 @@ if active_direction == -1
         stop_dist   := na
         partials    := 0
         ratchet_stop := na
+        be_locked    := false
 
 // ============================================================================
 // NEW ENTRIES
@@ -396,23 +431,26 @@ if long_breakout and enable_longs and active_direction == 0 and atr_val > 0
         r2_target        := close + (stop_dist * 2)
         r3_target        := close + (stop_dist * 3)
         partials         := 0
+        be_locked        := false
         new_long_entry   := true
 
         if show_trade_labels
             grade_sfx  = signal_grade == "A" ? " ★" : signal_grade == "B" ? "" : " ⚠"
             vol_tag    = regime_vol == "normal_vol" ? " | 0.75x" : ""
             ema_ctx    = ema_bull ? "EMA: BULL stack ✓" : ema_bear ? "EMA: BEAR stack ✗" : "EMA: Mixed"
+            be_line    = use_early_be ? "BE→:  $" + f_fmt(close + stop_dist * early_be_trig) + " (" + str.tostring(early_be_trig * 100, "#") + "% of 1R)\n" : ""
             label_text = "LONG SQUEEZE BO [" + signal_grade + grade_sfx + "]\n" +
                  regime_vol + vol_tag + "\n" +
-                 "Entry: $" + str.tostring(close, "#.##") + "\n" +
-                 "Stop:  $" + str.tostring(ratchet_stop, "#.##") + " (-1R)\n" +
-                 "1R:    $" + str.tostring(r1_target, "#.##") + " (30%)\n" +
-                 "2R:    $" + str.tostring(r2_target, "#.##") + " (30%)\n" +
-                 "3R:    $" + str.tostring(r3_target, "#.##") + " (30% + 10% runner)\n" +
-                 "ATR:   $" + str.tostring(atr_val, "#.##") + " x " + str.tostring(eff_mult, "#.##") + "\n" +
+                 "Entry: $" + f_fmt(close) + "\n" +
+                 "Stop:  $" + f_fmt(ratchet_stop) + " (-1R)\n" +
+                 be_line +
+                 "1R:    $" + f_fmt(r1_target) + " (30%)\n" +
+                 "2R:    $" + f_fmt(r2_target) + " (30%)\n" +
+                 "3R:    $" + f_fmt(r3_target) + " (30% + 10% runner)\n" +
+                 "ATR:   $" + f_fmt(atr_val) + " x " + str.tostring(eff_mult, "#.##") + "\n" +
                  "4H Vol: " + str.tostring(atr_4h_pct_rank, "#") + "% | Slope: " + str.tostring(ema_slope, "#.#") + "%\n" +
                  ema_ctx + "\n" +
-                 "Sq Hi: $" + str.tostring(saved_sq_high, "#.##") + " (" + str.tostring(sq_bar_count) + " bars)"
+                 "Sq Hi: $" + f_fmt(saved_sq_high) + " (" + str.tostring(sq_bar_count) + " bars)"
             lbl_color  = signal_grade == "A" ? color.new(color.green, 5) : signal_grade == "B" ? color.new(color.green, 25) : color.new(color.green, 50)
             label.new(bar_index, low, label_text, color=lbl_color, textcolor=color.white, style=label.style_label_up, size=size.normal)
     else
@@ -439,23 +477,26 @@ if short_breakout and enable_shorts and active_direction == 0 and atr_val > 0
         r2_target        := close - (stop_dist * 2)
         r3_target        := close - (stop_dist * 3)
         partials         := 0
+        be_locked        := false
         new_short_entry  := true
 
         if show_trade_labels
             grade_sfx  = signal_grade == "A" ? " ★" : signal_grade == "B" ? "" : " ⚠"
             vol_tag    = regime_vol == "normal_vol" ? " | 0.75x" : ""
             ema_ctx    = ema_bear ? "EMA: BEAR stack ✓" : ema_bull ? "EMA: BULL stack ✗" : "EMA: Mixed"
+            be_line    = use_early_be ? "BE→:  $" + f_fmt(close - stop_dist * early_be_trig) + " (" + str.tostring(early_be_trig * 100, "#") + "% of 1R)\n" : ""
             label_text = "SHORT SQUEEZE BO [" + signal_grade + grade_sfx + "]\n" +
                  regime_vol + vol_tag + "\n" +
-                 "Entry: $" + str.tostring(close, "#.##") + "\n" +
-                 "Stop:  $" + str.tostring(ratchet_stop, "#.##") + " (-1R)\n" +
-                 "1R:    $" + str.tostring(r1_target, "#.##") + " (30%)\n" +
-                 "2R:    $" + str.tostring(r2_target, "#.##") + " (30%)\n" +
-                 "3R:    $" + str.tostring(r3_target, "#.##") + " (30% + 10% runner)\n" +
-                 "ATR:   $" + str.tostring(atr_val, "#.##") + " x " + str.tostring(eff_mult, "#.##") + "\n" +
+                 "Entry: $" + f_fmt(close) + "\n" +
+                 "Stop:  $" + f_fmt(ratchet_stop) + " (-1R)\n" +
+                 be_line +
+                 "1R:    $" + f_fmt(r1_target) + " (30%)\n" +
+                 "2R:    $" + f_fmt(r2_target) + " (30%)\n" +
+                 "3R:    $" + f_fmt(r3_target) + " (30% + 10% runner)\n" +
+                 "ATR:   $" + f_fmt(atr_val) + " x " + str.tostring(eff_mult, "#.##") + "\n" +
                  "4H Vol: " + str.tostring(atr_4h_pct_rank, "#") + "% | Slope: " + str.tostring(ema_slope, "#.#") + "%\n" +
                  ema_ctx + "\n" +
-                 "Sq Lo: $" + str.tostring(saved_sq_low, "#.##") + " (" + str.tostring(sq_bar_count) + " bars)"
+                 "Sq Lo: $" + f_fmt(saved_sq_low) + " (" + str.tostring(sq_bar_count) + " bars)"
             lbl_color  = signal_grade == "A" ? color.new(color.red, 5) : signal_grade == "B" ? color.new(color.red, 25) : color.new(color.red, 50)
             label.new(bar_index, high, label_text, color=lbl_color, textcolor=color.white, style=label.style_label_down, size=size.normal)
     else
@@ -506,12 +547,9 @@ if show_exit_labels and exit_short_signal
 fast_col = ema_fast_rising ? color.new(color.lime, 0)    : color.new(color.red, 20)
 mid_col  = ema_mid_rising  ? color.new(color.aqua, 0)   : color.new(color.orange, 20)
 slow_col = ema_slow_rising ? color.new(color.teal, 0)   : color.new(color.maroon, 20)
-htf_col  = color.new(color.white, 30)
-
-ema_fast_plot = plot(show_emas ? ema_fast : na,    title="EMA Fast",     color=fast_col, linewidth=1, style=plot.style_line)
-ema_mid_plot  = plot(show_emas ? ema_mid  : na,    title="EMA Mid",      color=mid_col,  linewidth=2, style=plot.style_line)
-ema_slow_plot = plot(show_emas ? ema_slow : na,    title="EMA Slow",     color=slow_col, linewidth=2, style=plot.style_line)
-plot(show_emas and show_htf_ema ? htf_ema200 : na, title="HTF EMA200", color=htf_col, linewidth=3, style=plot.style_line)
+ema_fast_plot = plot(show_emas ? ema_fast : na, title="EMA Fast", color=fast_col, linewidth=1, style=plot.style_line)
+ema_mid_plot  = plot(show_emas ? ema_mid  : na, title="EMA Mid",  color=mid_col,  linewidth=2, style=plot.style_line)
+ema_slow_plot = plot(show_emas ? ema_slow : na, title="EMA Slow", color=slow_col, linewidth=2, style=plot.style_line)
 
 // EMA Ribbon fills
 ribbon_bull_col = color.new(color.green,  80)
@@ -539,11 +577,11 @@ plot(show_vwap and show_vwap_bands ? vwap_lower2 : na, title="VWAP -2s", color=v
 // PLOTS — STRATEGY (signals only rendered when valid_tf)
 // ============================================================================
 
-plotshape(new_long_entry,    title="Long Entry",   location=location.belowbar, color=color.lime,   style=shape.triangleup,   size=size.normal)
-plotshape(exit_long_signal,  title="Long Exit",    location=location.abovebar, color=color.orange, style=shape.xcross,       size=size.normal)
-plotshape(new_short_entry,   title="Short Entry",  location=location.abovebar, color=color.red,    style=shape.triangledown, size=size.normal)
-plotshape(exit_short_signal, title="Short Exit",   location=location.belowbar, color=color.orange, style=shape.xcross,       size=size.normal)
-plotshape(blocked_entry,     title="Blocked",      location=location.belowbar, color=color.gray,   style=shape.circle,       size=size.tiny)
+plotshape(show_entry_arrows and new_long_entry,    title="Long Entry",   location=location.belowbar, color=color.lime,   style=shape.triangleup,   size=size.normal)
+plotshape(show_exit_markers and exit_long_signal,  title="Long Exit",    location=location.abovebar, color=color.orange, style=shape.xcross,       size=size.normal)
+plotshape(show_entry_arrows and new_short_entry,   title="Short Entry",  location=location.abovebar, color=color.red,    style=shape.triangledown, size=size.normal)
+plotshape(show_exit_markers and exit_short_signal, title="Short Exit",   location=location.belowbar, color=color.orange, style=shape.xcross,       size=size.normal)
+plotshape(show_blocked_dots and blocked_entry,     title="Blocked",      location=location.belowbar, color=color.gray,   style=shape.circle,       size=size.tiny)
 
 // Squeeze range bands
 plot(show_squeeze and in_squeeze ? sq_high : na, title="Squeeze High", color=color.new(color.yellow, 20), style=plot.style_stepline, linewidth=2)
@@ -582,7 +620,7 @@ ema_struct_col  = ema_bull ? color.lime  : ema_bear ? color.red  : color.yellow
 // Price vs EMAs context
 price_vs_ema  = close > ema_slow and close > ema_mid and close > ema_fast ? "Above all EMAs ✓" : close < ema_slow and close < ema_mid and close < ema_fast ? "Below all EMAs ✗" : "Between EMAs ~"
 
-var table info = table.new(position.top_right, 2, 13, bgcolor=color.new(color.black, 80))
+var table info = table.new(position.bottom_left, 2, 11, bgcolor=color.new(color.black, 80))
 if barstate.islast
     // Position
     table.cell(info, 0, 0, "Pos", text_color=color.white)
@@ -597,61 +635,47 @@ if barstate.islast
 
     // Squeeze range
     table.cell(info, 0, 2, "Sq", text_color=color.white)
-    sq_text = in_squeeze ? "$" + str.tostring(sq_high, "#.##") + " / $" + str.tostring(sq_low, "#.##") + " [" + str.tostring(sq_bar_count) + "b]" : "--"
+    sq_text = in_squeeze ? "$" + f_fmt(sq_high) + " / $" + f_fmt(sq_low) + " [" + str.tostring(sq_bar_count) + "b]" : "--"
     table.cell(info, 1, 2, sq_text, text_color=in_squeeze ? color.yellow : color.gray)
 
     // Stop
     table.cell(info, 0, 3, "Stop", text_color=color.white)
-    stop_text = active_direction != 0 ? "$" + str.tostring(active_trail_stop, "#.##") + " TP" + str.tostring(partials) + "/3" + (partials >= 3 ? " runner" : "") : "--"
+    stop_text = active_direction != 0 ? "$" + f_fmt(active_trail_stop) + " TP" + str.tostring(partials) + "/3" + (partials >= 3 ? " runner" : "") : "--"
     table.cell(info, 1, 3, stop_text, text_color=active_direction != 0 ? color.yellow : color.gray)
 
+    // Current R
+    table.cell(info, 0, 4, "R", text_color=color.white)
+    cur_r      = active_direction ==  1 and not na(stop_dist) and stop_dist > 0 ? (close - active_entry) / stop_dist :
+                 active_direction == -1 and not na(stop_dist) and stop_dist > 0 ? (active_entry - close) / stop_dist : na
+    r_text     = not na(cur_r) ? str.tostring(cur_r, "+#.##") + "R [" + str.tostring(partials) + "/3 taken]" : "--"
+    r_color    = not na(cur_r) ? (cur_r >= 0 ? color.green : color.red) : color.gray
+    table.cell(info, 1, 4, r_text, text_color=r_color)
+
     // Win/Loss
-    table.cell(info, 0, 4, "W/L", text_color=color.white)
+    table.cell(info, 0, 5, "W/L", text_color=color.white)
     wr_color = win_rate >= 40 ? color.green : win_rate >= 30 ? color.yellow : color.red
-    table.cell(info, 1, 4, str.tostring(winning_trades) + "/" + str.tostring(losing_trades) + " " + str.tostring(win_rate, "#") + "%", text_color=wr_color)
+    table.cell(info, 1, 5, str.tostring(winning_trades) + "/" + str.tostring(losing_trades) + " " + str.tostring(win_rate, "#") + "%", text_color=wr_color)
 
     // Regime
-    table.cell(info, 0, 5, "Rgm", text_color=color.white)
+    table.cell(info, 0, 6, "Rgm", text_color=color.white)
     rgm_color = regime_trend == "uptrend" ? color.green : regime_trend == "downtrend" ? color.red : color.gray
-    table.cell(info, 1, 5, regime_allowed ? regime_label : "BLOCKED", text_color=regime_allowed ? rgm_color : color.gray)
+    table.cell(info, 1, 6, regime_allowed ? regime_label : "BLOCKED", text_color=regime_allowed ? rgm_color : color.gray)
 
     // Signal grade
-    table.cell(info, 0, 6, "Sig", text_color=color.white)
+    table.cell(info, 0, 7, "Sig", text_color=color.white)
     sig_color  = signal_grade == "A" ? color.green : signal_grade == "B" ? color.yellow : color.red
     sig_detail = signal_grade + " (Vol:" + str.tostring(atr_4h_pct_rank, "#") + "% Slp:" + str.tostring(ema_slope, "#.#") + "%)"
-    table.cell(info, 1, 6, sig_detail, text_color=sig_color)
-
-    // Mode
-    table.cell(info, 0, 7, "Mode", text_color=color.white)
-    mode_text  = enable_longs and enable_shorts ? "L+S" : enable_longs ? "Long only" : enable_shorts ? "Short only" : "OFF"
-    mode_color = enable_longs and enable_shorts ? color.yellow : enable_longs ? color.green : enable_shorts ? color.red : color.gray
-    table.cell(info, 1, 7, mode_text, text_color=mode_color)
-
-    // Filter
-    table.cell(info, 0, 8, "Flt", text_color=color.white)
-    filter_text = use_regime_filter ? str.tostring(blocked_trades) + " blocked" : "OFF"
-    table.cell(info, 1, 8, filter_text, text_color=use_regime_filter ? color.yellow : color.gray)
+    table.cell(info, 1, 7, sig_detail, text_color=sig_color)
 
     // EMA structure
-    table.cell(info, 0, 9, "EMA", text_color=color.white)
-    table.cell(info, 1, 9, ema_struct_str, text_color=ema_struct_col)
+    table.cell(info, 0, 8, "EMA", text_color=color.white)
+    table.cell(info, 1, 8, ema_struct_str, text_color=ema_struct_col)
 
     // Price vs EMAs
-    table.cell(info, 0, 10, "vs EMA", text_color=color.white)
+    table.cell(info, 0, 9, "vs EMA", text_color=color.white)
     pve_color = close > ema_slow ? color.green : color.red
-    table.cell(info, 1, 10, price_vs_ema, text_color=pve_color)
+    table.cell(info, 1, 9, price_vs_ema, text_color=pve_color)
 
-    // HTF EMA200
-    table.cell(info, 0, 11, "D EMA200", text_color=color.white)
-    htf_text  = close > htf_ema200 ? "Above ✓ $" + str.tostring(htf_ema200, "#.##") : "Below ✗ $" + str.tostring(htf_ema200, "#.##")
-    htf_color = close > htf_ema200 ? color.green : color.red
-    table.cell(info, 1, 11, htf_text, text_color=htf_color)
-
-    // TF validity note
-    table.cell(info, 0, 12, "TF", text_color=color.white)
-    tf_text  = valid_tf ? "✓ Signals ON" : "⚠ View only"
-    tf_color = valid_tf ? color.green : color.orange
-    table.cell(info, 1, 12, tf_text, text_color=tf_color)
 
 // ============================================================================
 // ALERTS
@@ -660,8 +684,8 @@ alertcondition(new_long_entry,                       title="V19 Long Entry",    
 alertcondition(new_short_entry,                      title="V19 Short Entry",   message="V19: Short squeeze breakout — close below squeeze low")
 alertcondition(exit_long_signal,                     title="V19 Long Exit",     message="V19: Long position exited")
 alertcondition(exit_short_signal,                    title="V19 Short Exit",    message="V19: Short position exited")
-alertcondition(is_squeezing and not is_squeezing[1], title="V19 Squeeze Start", message="V19: Volatility squeeze detected — ATR at low percentile")
-alertcondition(not is_squeezing and is_squeezing[1], title="V19 Squeeze End",   message="V19: Squeeze ended — watching for breakout direction")
-alertcondition(blocked_entry,                        title="V19 Blocked",       message="V19: Entry blocked by regime filter")
+alertcondition(is_squeezing and not is_squeezing[1] and alert_squeeze_events, title="V19 Squeeze Start", message="V19: Volatility squeeze detected — ATR at low percentile")
+alertcondition(not is_squeezing and is_squeezing[1] and alert_squeeze_events, title="V19 Squeeze End",   message="V19: Squeeze ended — watching for breakout direction")
+alertcondition(blocked_entry and alert_blocked,                               title="V19 Blocked",       message="V19: Entry blocked by regime filter")
 alertcondition(ema_golden_cross,                     title="V19 Golden Cross",  message="V19: EMA Golden Cross detected")
 alertcondition(ema_death_cross,                      title="V19 Death Cross",   message="V19: EMA Death Cross detected")

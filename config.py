@@ -411,12 +411,14 @@ V18_PARAMS = {
 # WARNING: 25 OOS trades is statistically thin — treat WF result with caution
 # NOTE: OOS > IS (1.76 vs 0.76) likely due to favorable OOS bear period, not skill
 V19_PARAMS = {
-    "lookback": 120,            # ATR percentile rank lookback (1H bars)
-    "squeeze_pctile": 20,       # Percentile threshold to qualify as squeeze
+    "lookback": 102,            # ATR percentile rank lookback (1H bars)
+    "squeeze_pctile": 35,       # Percentile threshold to qualify as squeeze
     "atr_mult_long": 5.0,       # Long 1R/trail
-    "atr_mult_short": 18.0,     # Short 1R/trail — AT CEILING, true optimum unknown
+    "atr_mult_short": 5.0,      # Short 1R/trail
     "atr_period": 14,           # ATR calc period on 1H (fixed)
     "risk_per_trade_pct": 3.0,  # Risk 3% of account at stop loss
+    "early_be_trig": 0.75,      # Move stop at 0.75R (validated 2026-02-27)
+    "early_be_dest": -0.5,      # Stop destination: halfway to stop loss
 }
 
 # V20 - Short-Only Double Top & Head and Shoulders

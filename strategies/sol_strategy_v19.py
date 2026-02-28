@@ -47,13 +47,16 @@ class SolStrategyV19(bt.Strategy):
     params = (
         # Shared squeeze detection
         ('lookback', 102),          # ATR percentile rank lookback (1H bars)
-        ('squeeze_pctile', 25),     # Percentile threshold to qualify as squeeze
+        ('squeeze_pctile', 35),     # Percentile threshold to qualify as squeeze
         # Direction-specific ATR multipliers (1R distance AND runner trail)
-        ('atr_mult_long', 3.25),    # Long: walk-forward validated
-        ('atr_mult_short', 8.0),    # Short: from 100-trial combined run (atr_mult capped at 8.0)
+        ('atr_mult_long', 5.0),     # Long 1R/trail
+        ('atr_mult_short', 5.0),    # Short 1R/trail
         # Fixed
         ('atr_period', 14),         # ATR calc period on 1H
         ('risk_per_trade_pct', 3.0),  # Risk 3% of account at stop loss
+        # Early stop management (0.75R trigger → -0.5R destination, validated 2026-02-27)
+        ('early_be_trig', 0.75),    # R fraction to trigger stop move (0 = disabled)
+        ('early_be_dest', -0.5),    # Stop destination in R units (0.0=entry, -0.5=halfway to stop)
     )
 
     def __init__(self):
@@ -76,6 +79,7 @@ class SolStrategyV19(bt.Strategy):
         self.in_squeeze = False
         self.squeeze_high = None
         self.squeeze_low = None
+        self.squeeze_bars = 0  # Number of 1H bars spent in current squeeze
 
         # Position tracking
         self.entry_price = None
@@ -93,6 +97,10 @@ class SolStrategyV19(bt.Strategy):
         # Bar tracking for new bar detection
         self.last_1h_len = 0
         self.last_4h_len = 0
+
+        # Early BE / MFE tracking
+        self.be_locked = False      # Whether early BE has been triggered this trade
+        self.mfe_r = 0.0            # Maximum Favorable Excursion in R units
 
     def _atr_percentile_rank(self):
         """Calculate ATR percentile rank over lookback bars on 1H."""
@@ -147,6 +155,7 @@ class SolStrategyV19(bt.Strategy):
         if pctile_rank < self.p.squeeze_pctile:
             # In squeeze: update range
             self.in_squeeze = True
+            self.squeeze_bars += 1
             if self.squeeze_high is None or high_1h > self.squeeze_high:
                 self.squeeze_high = high_1h
             if self.squeeze_low is None or low_1h < self.squeeze_low:
@@ -160,6 +169,7 @@ class SolStrategyV19(bt.Strategy):
         # Squeeze just ended - check for breakout
         sq_high = self.squeeze_high
         sq_low = self.squeeze_low
+        sq_len = self.squeeze_bars  # Save before reset
 
         # Reset squeeze state regardless of outcome
         self._reset_squeeze()
@@ -183,14 +193,14 @@ class SolStrategyV19(bt.Strategy):
 
         # Long breakout: close above squeeze high
         if close_1h > sq_high:
-            self._enter_long(close_1h, atr, regime_info)
+            self._enter_long(close_1h, atr, regime_info, sq_len)
             return
 
         # Short breakout: close below squeeze low
         if close_1h < sq_low:
-            self._enter_short(close_1h, atr, regime_info)
+            self._enter_short(close_1h, atr, regime_info, sq_len)
 
-    def _enter_long(self, price, atr, regime_info=None):
+    def _enter_long(self, price, atr, regime_info=None, sq_len=0):
         """Enter long position with R-based sizing. Normal_vol uses 0.75x atr_mult."""
         equity = self.broker.getvalue()
         vol_regime = regime_info.get('volatility', 'high_vol') if regime_info else 'high_vol'
@@ -234,9 +244,10 @@ class SolStrategyV19(bt.Strategy):
             "stop_distance": round(self.stop_distance, 4),
             "risk_pct": self.p.risk_per_trade_pct,
             "position_size": round(size, 4),
+            "squeeze_bars": sq_len,
         }
 
-    def _enter_short(self, price, atr, regime_info=None):
+    def _enter_short(self, price, atr, regime_info=None, sq_len=0):
         """Enter short position with R-based sizing. Normal_vol uses 0.75x atr_mult_short."""
         equity = self.broker.getvalue()
         vol_regime = regime_info.get('volatility', 'high_vol') if regime_info else 'high_vol'
@@ -280,6 +291,7 @@ class SolStrategyV19(bt.Strategy):
             "stop_distance": round(self.stop_distance, 4),
             "risk_pct": self.p.risk_per_trade_pct,
             "position_size": round(size, 4),
+            "squeeze_bars": sq_len,
         }
 
     def _check_exits(self):
@@ -300,6 +312,24 @@ class SolStrategyV19(bt.Strategy):
         # Update high water mark
         if self.high_water_mark is None or current_price > self.high_water_mark:
             self.high_water_mark = current_price
+
+        # Track MFE (Maximum Favorable Excursion)
+        cur_r = (current_price - self.entry_price) / self.stop_distance
+        if cur_r > self.mfe_r:
+            self.mfe_r = cur_r
+            if self._entry_context is not None:
+                self._entry_context['mfe_r'] = round(self.mfe_r, 2)
+
+        # Early stop management: move stop toward breakeven before first partial
+        if self.p.early_be_trig > 0 and not self.be_locked and self.partials_taken == 0:
+            trigger_price = self.entry_price + self.stop_distance * self.p.early_be_trig
+            if current_price >= trigger_price:
+                new_stop = self.entry_price + self.stop_distance * self.p.early_be_dest
+                self.current_stop = max(self.current_stop, new_stop)
+                self.be_locked = True
+                print(f"[{dt}] LONG EARLY_BE triggered @ {current_price:.2f} "
+                      f"→ stop: {self.current_stop:.2f} "
+                      f"({self.p.early_be_trig}R trig, {self.p.early_be_dest}R dest)")
 
         # Check R-target partials (1R, 2R, 3R)
         for i, (r_mult, fraction) in enumerate(self.risk_mgr.partial_schedule):
@@ -349,6 +379,25 @@ class SolStrategyV19(bt.Strategy):
         # Update low water mark (price moving down = good for shorts)
         if self.low_water_mark is None or current_price < self.low_water_mark:
             self.low_water_mark = current_price
+
+        # Track MFE (for shorts, favorable = price going down)
+        cur_r = (self.entry_price - current_price) / self.stop_distance
+        if cur_r > self.mfe_r:
+            self.mfe_r = cur_r
+            if self._entry_context is not None:
+                self._entry_context['mfe_r'] = round(self.mfe_r, 2)
+
+        # Early stop management: move stop toward breakeven before first partial
+        if self.p.early_be_trig > 0 and not self.be_locked and self.partials_taken == 0:
+            trigger_price = self.entry_price - self.stop_distance * self.p.early_be_trig
+            if current_price <= trigger_price:
+                # For shorts: early_be_dest <= 0, new_stop is below entry (toward entry)
+                new_stop = self.entry_price - self.stop_distance * self.p.early_be_dest
+                self.current_stop = min(self.current_stop, new_stop)
+                self.be_locked = True
+                print(f"[{dt}] SHORT EARLY_BE triggered @ {current_price:.2f} "
+                      f"→ stop: {self.current_stop:.2f} "
+                      f"({self.p.early_be_trig}R trig, {self.p.early_be_dest}R dest)")
 
         # Check R-target partials (1R, 2R, 3R — price moving DOWN)
         for i, (r_mult, fraction) in enumerate(self.risk_mgr.partial_schedule):
@@ -415,6 +464,7 @@ class SolStrategyV19(bt.Strategy):
         self.in_squeeze = False
         self.squeeze_high = None
         self.squeeze_low = None
+        self.squeeze_bars = 0
 
     def _reset_state(self):
         """Reset position tracking."""
@@ -429,6 +479,8 @@ class SolStrategyV19(bt.Strategy):
         self.high_water_mark = None
         self.low_water_mark = None
         self.effective_atr_mult = None
+        self.be_locked = False
+        self.mfe_r = 0.0
 
     def notify_order(self, order):
         if order.status in [order.Completed]:

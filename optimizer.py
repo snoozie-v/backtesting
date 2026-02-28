@@ -806,20 +806,23 @@ def create_v17_objective(metric: str = "expectancy", start_date: str = None, end
 
 
 def _v19_params(trial: optuna.Trial) -> dict:
-    """Build v19 param dict: 4 tunable + 2 hardcoded.
-    Separate atr_mult for long vs short — longs need tight stops (~3-5x),
-    shorts need much wider stops on SOL (~6-12x) due to upward bias.
+    """Build v19 param dict: 4 tunable + 4 hardcoded.
+    atr_mult_short range is symmetric with long (both 2-10) to suit
+    markets without a strong directional bias (e.g. BTC).
+    early_be_trig fixed at validated 0.75R value.
     """
     return {
         # Shared squeeze detection
         "lookback": trial.suggest_int("lookback", 30, 120, step=6),
         "squeeze_pctile": trial.suggest_int("squeeze_pctile", 10, 40, step=5),
-        # Direction-specific ATR multipliers
-        "atr_mult_long": trial.suggest_float("atr_mult_long", 2.0, 6.0, step=0.25),
-        "atr_mult_short": trial.suggest_float("atr_mult_short", 4.0, 28.0, step=0.5),
+        # Direction-specific ATR multipliers (symmetric range for BTC)
+        "atr_mult_long": trial.suggest_float("atr_mult_long", 2.0, 10.0, step=0.25),
+        "atr_mult_short": trial.suggest_float("atr_mult_short", 2.0, 10.0, step=0.25),
         # Hardcoded
         "atr_period": 14,
         "risk_per_trade_pct": 3.0,
+        "early_be_trig": 0.75,
+        "early_be_dest": -0.5,
     }
 
 
