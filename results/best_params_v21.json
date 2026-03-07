@@ -1,0 +1,20 @@
+{
+  "params": {
+    "vwap_period": 60,
+    "sd_entry": 1.75,
+    "atr_stop_mult": 2.0,
+    "atr_vol_max_pct": 4.0
+  },
+  "metrics": {
+    "optimizer_score": 0.17,
+    "final_value": 0.17,
+    "total_return_pct": -3.005775247429301,
+    "total_trades": 235,
+    "trades_per_day": null,
+    "win_rate_pct": 48.08510638297872,
+    "max_drawdown_pct": 56.99428234477071,
+    "sharpe_ratio": 0
+  },
+  "trial_number": 12,
+  "timestamp": "2026-03-05T11:24:55.510760"
+}

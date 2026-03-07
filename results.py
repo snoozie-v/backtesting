@@ -374,11 +374,15 @@ def print_walk_forward_report(in_sample: BacktestResult, out_of_sample: Backtest
     def fmt_ratio(v):
         return f"{v:.2f}" if v is not None else "N/A"
 
+    def fmt_r(v):
+        return f"{v:+.2f}R" if v is not None else "N/A"
+
     rows = [
         ("Final Value", fmt_dollar(in_sample.final_value), fmt_dollar(out_of_sample.final_value)),
         ("Total Return", fmt_pct(in_sample.total_return_pct), fmt_pct(out_of_sample.total_return_pct)),
         ("Total Trades", fmt_num(in_sample.total_trades), fmt_num(out_of_sample.total_trades)),
         ("Win Rate", fmt_pct(in_sample.win_rate_pct), fmt_pct(out_of_sample.win_rate_pct)),
+        ("R-Expectancy", fmt_r(in_sample.avg_r_multiple), fmt_r(out_of_sample.avg_r_multiple)),
         ("Max Drawdown", fmt_pct(in_sample.max_drawdown_pct), fmt_pct(out_of_sample.max_drawdown_pct)),
         ("Sharpe Ratio", fmt_ratio(in_sample.sharpe_ratio), fmt_ratio(out_of_sample.sharpe_ratio)),
         ("Buy & Hold Return", fmt_pct(in_sample.buy_hold_return_pct), fmt_pct(out_of_sample.buy_hold_return_pct)),
@@ -390,20 +394,32 @@ def print_walk_forward_report(in_sample: BacktestResult, out_of_sample: Backtest
 
     print(f"\n{'-'*65}")
 
-    # Degradation analysis
-    if in_sample.total_return_pct and out_of_sample.total_return_pct:
-        degradation = in_sample.total_return_pct - out_of_sample.total_return_pct
-        ratio = out_of_sample.total_return_pct / in_sample.total_return_pct if in_sample.total_return_pct != 0 else 0
-        print(f"\nReturn degradation: {degradation:+.2f}% (OOS is {ratio:.0%} of IS)")
+    # Assessment logic — handles all four IS/OOS sign combinations
+    is_ret = in_sample.total_return_pct
+    oos_ret = out_of_sample.total_return_pct
 
-        if ratio >= 0.5:
-            print("Assessment: GOOD - Strategy retains majority of in-sample performance")
-        elif ratio >= 0.2:
-            print("Assessment: FAIR - Notable degradation, possible overfitting")
-        elif ratio > 0:
-            print("Assessment: POOR - Severe degradation, likely overfit")
-        else:
+    if is_ret is not None and oos_ret is not None:
+        if is_ret > 0 and oos_ret > 0:
+            ratio = oos_ret / is_ret
+            print(f"\nOOS retention: {ratio:.0%} of IS return ({is_ret:+.1f}% → {oos_ret:+.1f}%)")
+            if ratio >= 0.5:
+                print("Assessment: GOOD - Retains majority of in-sample performance")
+            elif ratio >= 0.2:
+                print("Assessment: FAIR - Notable degradation, possible overfitting")
+            else:
+                print("Assessment: POOR - Severe degradation, likely overfit")
+
+        elif is_ret <= 0 and oos_ret > 0:
+            print(f"\nIS: {is_ret:+.1f}%  →  OOS: {oos_ret:+.1f}%")
+            print("Assessment: REGIME SHIFT - Profitable OOS despite losing IS; different market conditions in each period")
+
+        elif is_ret > 0 and oos_ret <= 0:
+            print(f"\nIS: {is_ret:+.1f}%  →  OOS: {oos_ret:+.1f}%")
             print("Assessment: FAIL - Strategy loses money out-of-sample, likely overfit")
+
+        else:  # both <= 0
+            print(f"\nIS: {is_ret:+.1f}%  →  OOS: {oos_ret:+.1f}%")
+            print("Assessment: FAIL - Strategy unprofitable in both periods")
 
     print(f"{'='*70}\n")
 

@@ -689,7 +689,7 @@ Examples:
     parser.add_argument(
         "--strategy", "-s",
         default="v8",
-        choices=["v3", "v6", "v7", "v8", "v8_fast", "v8_fast_sol", "v8_fast_vet", "v8_baseline", "v9", "v9_baseline", "v9_universal", "v9_sol", "v9_vet", "v11", "v13", "v14", "v15", "v15_baseline", "v15_sol", "v15_btc", "v15_eth", "v16", "v17", "v18", "v19", "v20"],
+        choices=["v3", "v6", "v7", "v8", "v8_fast", "v8_fast_sol", "v8_fast_vet", "v8_baseline", "v9", "v9_baseline", "v9_universal", "v9_sol", "v9_vet", "v11", "v13", "v14", "v15", "v15_baseline", "v15_sol", "v15_btc", "v15_eth", "v16", "v17", "v18", "v19", "v20", "v21"],
         help="Strategy to run (default: v8)"
     )
 

@@ -1,0 +1,549 @@
+//@version=6
+indicator("V19 (15M) + V21 (4H) Hybrid", overlay=true, max_lines_count=500, max_labels_count=500)
+
+// ============================================================================
+// STRATEGY NOTES
+// ============================================================================
+// Single indicator — load on both charts. Each strategy only fires on its
+// native timeframe:
+//
+//   15M chart → V19 Squeeze Breakout signals only
+//   4H  chart → V21 VWAP Mean Reversion signals only
+//
+// V19: ATR percentile squeeze → breakout above/below squeeze range
+//   Validated: OOS +30.5%, 50% WR on SOL 15M
+//
+// V21: Rolling VWAP + SD bands → 2-bar reversal entry
+//   Validated: OOS +44.4%, 53% WR on ETH 4H
+//
+// V19 exits: 30% at 1R, 30% at 2R, 30% at 3R, 10% runner — trail from 1R (5x ATR)
+// V21 exits: 50% at 1R, 40% at 2R, 10% runner — trail from 1R (5x ATR)
+//   Stop ratchets: breakeven at 1R, +1R at 2R
+
+// ============================================================================
+// TIMEFRAME GATES
+// ============================================================================
+
+tf_secs   = timeframe.in_seconds()
+is_v19_tf = tf_secs == 15 * 60          // exactly 15M
+is_v21_tf = tf_secs == 240 * 60         // exactly 4H
+
+tf_label  = is_v19_tf ? "15M → V19 active" : is_v21_tf ? "4H → V21 active" : "⚠ Use 15M or 4H"
+tf_color  = is_v19_tf ? color.aqua : is_v21_tf ? color.yellow : color.red
+
+// ============================================================================
+// V19 PARAMETERS
+// ============================================================================
+
+v19_lookback  = input.int  (102,  "V19 Squeeze Lookback (bars)", group="V19 — 15M Params", minval=10)
+v19_sq_pctile = input.int  (35,   "V19 Squeeze Percentile",      group="V19 — 15M Params", minval=5, maxval=50)
+v19_atr_mult  = input.float(5.0,  "V19 ATR Mult (1R)",           group="V19 — 15M Params", step=0.25, minval=1.0)
+v19_early_be  = input.bool (true, "V19 Early Stop Move",          group="V19 — 15M Params")
+v19_be_trig   = input.float(0.75, "V19 BE Trigger (fraction of 1R)", group="V19 — 15M Params", step=0.05, minval=0.1, maxval=0.99)
+v19_be_dest   = input.float(-0.5, "V19 BE Destination (R units)",    group="V19 — 15M Params", step=0.05, minval=-0.99, maxval=0.0)
+
+// V19 Regime Filter (matches standalone V19 exactly)
+v19_use_regime    = input.bool(true,  "Enable Regime Filter",          group="V19 — Regime Filter")
+v19_allow_ut_high = input.bool(true,  "Allow: Uptrend + High Vol",     group="V19 — Regime Filter")
+v19_allow_ut_norm = input.bool(true,  "Allow: Uptrend + Normal Vol",   group="V19 — Regime Filter")
+v19_allow_ut_low  = input.bool(false, "Allow: Uptrend + Low Vol",      group="V19 — Regime Filter")
+v19_allow_dt_high = input.bool(true,  "Allow: Downtrend + High Vol",   group="V19 — Regime Filter")
+v19_allow_dt_norm = input.bool(true,  "Allow: Downtrend + Normal Vol", group="V19 — Regime Filter")
+v19_allow_dt_low  = input.bool(false, "Allow: Downtrend + Low Vol",    group="V19 — Regime Filter")
+v19_allow_rg_high = input.bool(true,  "Allow: Ranging + High Vol",     group="V19 — Regime Filter")
+v19_allow_rg_norm = input.bool(true,  "Allow: Ranging + Normal Vol",   group="V19 — Regime Filter")
+v19_allow_rg_low  = input.bool(false, "Allow: Ranging + Low Vol",      group="V19 — Regime Filter")
+
+// ============================================================================
+// V21 PARAMETERS — asset-specific defaults
+// ============================================================================
+
+is_eth = str.contains(syminfo.ticker, "ETH")
+is_sol = str.contains(syminfo.ticker, "SOL")
+asset_label = is_eth ? "ETH" : is_sol ? "SOL" : "BTC/default"
+
+v21_vwap_inp    = input.int  (0,   "V21 VWAP Period (0=auto)",   group="V21 — 4H Params", minval=0)
+v21_sd_inp      = input.float(0.0, "V21 SD Entry (0=auto)",      group="V21 — 4H Params", step=0.25, minval=0)
+v21_atr_inp     = input.float(0.0, "V21 ATR Stop Mult (0=auto)", group="V21 — 4H Params", step=0.25, minval=0)
+v21_vol_max_inp = input.float(0.0, "V21 ATR Vol Max % (0=auto)", group="V21 — 4H Params", step=0.5,  minval=0)
+v21_vol_min     = input.float(0.5, "V21 ATR Vol Min %",          group="V21 — 4H Params", step=0.1,  minval=0)
+
+vwap_per     = v21_vwap_inp    > 0   ? v21_vwap_inp    : 50
+sd_entry     = v21_sd_inp      > 0.0 ? v21_sd_inp      : is_eth ? 2.0 : 2.25
+atr_mult_v21 = v21_atr_inp     > 0.0 ? v21_atr_inp     : 2.75
+atr_vol_max  = v21_vol_max_inp > 0.0 ? v21_vol_max_inp : 11.0
+
+// ============================================================================
+// SHARED PARAMETERS
+// ============================================================================
+
+atr_period       = input.int  (14,  "ATR Period",                    group="Shared")
+atr_trail_mult   = input.float(5.0, "V19 ATR Trail Mult (runner)",    group="Shared", step=0.25)
+v21_trail_mult   = input.float(5.0, "V21 ATR Trail Mult (runner)",    group="Shared", step=0.25)
+enable_longs   = input.bool (true,  "Enable Longs",  group="Direction")
+enable_shorts  = input.bool (true,  "Enable Shorts", group="Direction")
+account_equity = input.float(10000.0, "Account Equity ($)", group="Account", step=1000)
+risk_pct       = input.float(3.0,     "Risk % per trade",   group="Account", step=0.5)
+
+show_labels    = input.bool(true, "Show Entry/Exit Labels", group="Display")
+show_bands     = input.bool(true, "Show V21 VWAP Bands",   group="Display")
+show_squeeze   = input.bool(true, "Show V19 Squeeze Range",group="Display")
+show_targets   = input.bool(true, "Show R-Level Lines",    group="Display")
+
+// ============================================================================
+// ATR
+// ============================================================================
+
+atr_val    = ta.atr(atr_period)
+atr_pct    = atr_val / close * 100
+atr_vol_ok = atr_pct >= v21_vol_min and atr_pct <= atr_vol_max
+
+// ============================================================================
+// V19 REGIME CLASSIFICATION (daily EMA + 4H ATR percentile — matches standalone V19)
+// ============================================================================
+
+daily_ema   = request.security(syminfo.tickerid, "1D", ta.ema(close, 21))
+daily_close = request.security(syminfo.tickerid, "1D", close)
+ema_slope   = daily_ema[5] > 0 ? (daily_ema - daily_ema[5]) / daily_ema[5] * 100 : 0.0
+
+regime_trend_live = ema_slope > 0 and daily_close > daily_ema ? "uptrend" : ema_slope < 0 and daily_close < daily_ema ? "downtrend" : "ranging"
+
+atr_4h          = request.security(syminfo.tickerid, "240", ta.atr(14))
+atr_4h_pct_rank = ta.percentrank(atr_4h, 90)
+regime_vol_live = atr_4h_pct_rank > 75 ? "high_vol" : atr_4h_pct_rank < 25 ? "low_vol" : "normal_vol"
+
+// Lock to previous bar to prevent mid-bar signal flicker
+regime_trend = regime_trend_live[1]
+regime_vol   = regime_vol_live[1]
+
+// Normal vol → 0.75x stop/target scaling (same as standalone V19)
+v19_vol_scale = regime_vol == "normal_vol" ? 0.75 : 1.0
+
+regime_allowed = not v19_use_regime or (
+     (regime_trend == "uptrend"   and regime_vol == "high_vol"   and v19_allow_ut_high) or
+     (regime_trend == "uptrend"   and regime_vol == "normal_vol" and v19_allow_ut_norm) or
+     (regime_trend == "uptrend"   and regime_vol == "low_vol"    and v19_allow_ut_low)  or
+     (regime_trend == "downtrend" and regime_vol == "high_vol"   and v19_allow_dt_high) or
+     (regime_trend == "downtrend" and regime_vol == "normal_vol" and v19_allow_dt_norm) or
+     (regime_trend == "downtrend" and regime_vol == "low_vol"    and v19_allow_dt_low)  or
+     (regime_trend == "ranging"   and regime_vol == "high_vol"   and v19_allow_rg_high) or
+     (regime_trend == "ranging"   and regime_vol == "normal_vol" and v19_allow_rg_norm) or
+     (regime_trend == "ranging"   and regime_vol == "low_vol"    and v19_allow_rg_low))
+
+// ============================================================================
+// V19 ENGINE — ATR PERCENTILE SQUEEZE (15M native)
+// ============================================================================
+
+atr_pctile_rank = ta.percentrank(atr_val, v19_lookback)
+is_squeezing    = atr_pctile_rank < v19_sq_pctile
+
+var bool  in_squeeze    = false
+var float sq_hi         = na
+var float sq_lo         = na
+var bool  sq_just_ended = false
+var float saved_sq_hi   = na
+var float saved_sq_lo   = na
+var int   sq_bar_count  = 0
+
+sq_just_ended := false
+saved_sq_hi   := na
+saved_sq_lo   := na
+
+if is_squeezing
+    if not in_squeeze
+        in_squeeze   := true
+        sq_hi        := high
+        sq_lo        := low
+        sq_bar_count := 1
+    else
+        sq_hi        := math.max(sq_hi, high)
+        sq_lo        := math.min(sq_lo, low)
+        sq_bar_count += 1
+else if in_squeeze
+    sq_just_ended := true
+    saved_sq_hi   := sq_hi
+    saved_sq_lo   := sq_lo
+    in_squeeze    := false
+    sq_hi         := na
+    sq_lo         := na
+
+valid_bo      = sq_just_ended and not na(saved_sq_hi) and not na(saved_sq_lo) and saved_sq_hi > saved_sq_lo
+v19_long_raw  = is_v19_tf and enable_longs  and valid_bo and close > saved_sq_hi and regime_allowed
+v19_short_raw = is_v19_tf and enable_shorts and valid_bo and close < saved_sq_lo and regime_allowed
+
+// ============================================================================
+// V21 ENGINE — ROLLING VWAP + SD BANDS (4H native)
+// ============================================================================
+
+tp       = (high + low + close) / 3.0
+sum_tpv  = math.sum(tp * volume, vwap_per)
+sum_vol  = math.sum(volume, vwap_per)
+vwap_val = sum_vol > 0 ? sum_tpv / sum_vol : na
+
+var float sq_sum_v21 = 0.0
+sq_sum_v21 := 0.0
+for i = 0 to vwap_per - 1
+    if not na(close[i]) and not na(vwap_val)
+        sq_sum_v21 += math.pow(close[i] - vwap_val, 2)
+sd_val     = math.sqrt(sq_sum_v21 / vwap_per)
+upper_band = vwap_val + sd_entry * sd_val
+lower_band = vwap_val - sd_entry * sd_val
+
+v21_long_raw  = is_v21_tf and enable_longs  and not na(lower_band[1]) and close[1] <= lower_band[1] and close > lower_band and atr_vol_ok
+v21_short_raw = is_v21_tf and enable_shorts and not na(upper_band[1]) and close[1] >= upper_band[1] and close < upper_band and atr_vol_ok
+
+// ============================================================================
+// UNIFIED SIGNAL + ATR MULT SELECTION
+// ============================================================================
+
+long_signal   = v19_long_raw  or v21_long_raw
+short_signal  = v19_short_raw or v21_short_raw
+signal_source = v19_long_raw or v19_short_raw ? "V19" : v21_long_raw or v21_short_raw ? "V21" : ""
+// V19: apply vol scaling (0.75x in normal_vol regime); V21: always full mult
+v19_eff_mult  = v19_atr_mult * v19_vol_scale
+entry_mult    = is_v19_tf ? v19_eff_mult : atr_mult_v21
+
+// ============================================================================
+// TRADE STATE
+// ============================================================================
+
+var int    direction     = 0
+var float  entry_px      = na
+var float  stop_px       = na
+var float  one_r_px      = na
+var float  two_r_px      = na
+var float  three_r_px    = na
+var float  entry_atr_val = na
+var float  hwm           = na
+var int    partial_state = 0
+var string trade_src     = ""
+var bool   be_locked     = false
+
+// ============================================================================
+// W/L TRACKING
+// ============================================================================
+
+var int v19_w = 0
+var int v19_l = 0
+var int v21_w = 0
+var int v21_l = 0
+
+// ============================================================================
+// STOP RATCHETING & RUNNER TRAIL
+// ============================================================================
+
+if direction == 1
+    hwm := math.max(hwm, high)
+    // V19: trail from HWM using v19_atr_mult after 1R (matches standalone V19 exactly)
+    // V19: trail from HWM using v19_atr_mult after 1R
+    // V21: trail from HWM using v21_trail_mult after 1R
+    if trade_src == "V19" and partial_state >= 1
+        stop_px := math.max(stop_px, hwm - entry_atr_val * v19_atr_mult)
+    else if trade_src == "V21" and partial_state >= 1
+        stop_px := math.max(stop_px, hwm - entry_atr_val * v21_trail_mult)
+    if partial_state == 0 and high >= one_r_px
+        partial_state := 1
+        stop_px := entry_px
+        if show_labels
+            label.new(bar_index, low, "1R ✓\nBE", color=color.new(color.teal, 20), textcolor=color.white, style=label.style_label_up, size=size.tiny)
+    else if partial_state == 1 and high >= two_r_px
+        partial_state := 2
+        stop_px := math.max(stop_px, one_r_px)
+        if show_labels
+            label.new(bar_index, low, "2R ✓\n+1R", color=color.new(color.teal, 20), textcolor=color.white, style=label.style_label_up, size=size.tiny)
+    // 3R ratchet: V19 only (V21 exits 90% at 2R, 10% runner)
+    else if partial_state == 2 and high >= three_r_px and trade_src == "V19"
+        partial_state := 3
+        stop_px := two_r_px
+        if show_labels
+            label.new(bar_index, low, "3R ✓\n+2R", color=color.new(color.teal, 20), textcolor=color.white, style=label.style_label_up, size=size.tiny)
+
+if direction == -1
+    hwm := math.min(hwm, low)
+    // V19: trail from LWM using v19_atr_mult after 1R (matches standalone V19 exactly)
+    // V19: trail from LWM using v19_atr_mult after 1R
+    // V21: trail from LWM using v21_trail_mult after 1R
+    if trade_src == "V19" and partial_state >= 1
+        stop_px := math.min(stop_px, hwm + entry_atr_val * v19_atr_mult)
+    else if trade_src == "V21" and partial_state >= 1
+        stop_px := math.min(stop_px, hwm + entry_atr_val * v21_trail_mult)
+    if partial_state == 0 and low <= one_r_px
+        partial_state := 1
+        stop_px := entry_px
+        if show_labels
+            label.new(bar_index, high, "1R ✓\nBE", color=color.new(color.teal, 20), textcolor=color.white, style=label.style_label_down, size=size.tiny)
+    else if partial_state == 1 and low <= two_r_px
+        partial_state := 2
+        stop_px := math.min(stop_px, one_r_px)
+        if show_labels
+            label.new(bar_index, high, "2R ✓\n+1R", color=color.new(color.teal, 20), textcolor=color.white, style=label.style_label_down, size=size.tiny)
+    // 3R ratchet: V19 only (V21 exits 90% at 2R, 10% runner)
+    else if partial_state == 2 and low <= three_r_px and trade_src == "V19"
+        partial_state := 3
+        stop_px := two_r_px
+        if show_labels
+            label.new(bar_index, high, "3R ✓\n+2R", color=color.new(color.teal, 20), textcolor=color.white, style=label.style_label_down, size=size.tiny)
+
+// ============================================================================
+// V19 EARLY STOP MOVE (before any partial, on 15M trades only)
+// ============================================================================
+
+if direction == 1 and trade_src == "V19" and v19_early_be and not be_locked and partial_state == 0
+    if high >= entry_px + entry_atr_val * v19_atr_mult * v19_be_trig
+        stop_px  := entry_px + entry_atr_val * v19_atr_mult * v19_be_dest
+        be_locked := true
+
+if direction == -1 and trade_src == "V19" and v19_early_be and not be_locked and partial_state == 0
+    if low <= entry_px - entry_atr_val * v19_atr_mult * v19_be_trig
+        stop_px  := entry_px - entry_atr_val * v19_atr_mult * v19_be_dest
+        be_locked := true
+
+// ============================================================================
+// EXIT DETECTION
+// ============================================================================
+
+var bool exit_signal = false
+exit_signal := false
+
+if direction == 1 and low <= stop_px
+    // V19: win = stop ratcheted above entry (requires 2R hit)
+    // V21: win = reached 1R (50% captured, stop at BE or better)
+    won = trade_src == "V21" ? partial_state >= 1 : stop_px > entry_px
+    if trade_src == "V19"
+        if won
+            v19_w += 1
+        else
+            v19_l += 1
+    else if trade_src == "V21"
+        if won
+            v21_w += 1
+        else
+            v21_l += 1
+    exit_signal   := true
+    direction     := 0
+    entry_px      := na
+    stop_px       := na
+    one_r_px      := na
+    two_r_px      := na
+    three_r_px    := na
+    entry_atr_val := na
+    hwm           := na
+    partial_state := 0
+    trade_src     := ""
+    be_locked     := false
+
+if direction == -1 and high >= stop_px
+    // V19: win = stop ratcheted below entry (requires 2R hit)
+    // V21: win = reached 1R (50% captured, stop at BE or better)
+    won = trade_src == "V21" ? partial_state >= 1 : stop_px < entry_px
+    if trade_src == "V19"
+        if won
+            v19_w += 1
+        else
+            v19_l += 1
+    else if trade_src == "V21"
+        if won
+            v21_w += 1
+        else
+            v21_l += 1
+    exit_signal   := true
+    direction     := 0
+    entry_px      := na
+    stop_px       := na
+    one_r_px      := na
+    two_r_px      := na
+    three_r_px    := na
+    entry_atr_val := na
+    hwm           := na
+    partial_state := 0
+    trade_src     := ""
+    be_locked     := false
+
+// ============================================================================
+// ENTRY EXECUTION
+// ============================================================================
+
+if long_signal and direction == 0
+    sd_entry_dist = atr_val * entry_mult
+    entry_px      := close
+    stop_px       := close - sd_entry_dist
+    one_r_px      := close + sd_entry_dist
+    two_r_px      := close + sd_entry_dist * 2.0
+    three_r_px    := signal_source == "V19" ? close + sd_entry_dist * 3.0 : na
+    entry_atr_val := atr_val
+    hwm           := close
+    partial_state := 0
+    direction     := 1
+    trade_src     := signal_source
+    be_locked     := false
+
+    qty = sd_entry_dist > 0 ? account_equity * risk_pct / 100.0 / sd_entry_dist : 0.0
+
+    if show_targets
+        line.new(bar_index, stop_px,  bar_index + 80, stop_px,  color=color.new(color.red,    40), style=line.style_dotted, width=1)
+        line.new(bar_index, one_r_px, bar_index + 80, one_r_px, color=color.new(color.yellow, 40), style=line.style_dotted, width=1)
+        line.new(bar_index, two_r_px, bar_index + 80, two_r_px, color=color.new(color.orange, 40), style=line.style_dotted, width=1)
+        if signal_source == "V19"
+            line.new(bar_index, three_r_px, bar_index + 80, three_r_px, color=color.new(color.lime, 40), style=line.style_dotted, width=1)
+
+    if show_labels
+        vd = vwap_val > 0 ? (close - vwap_val) / vwap_val * 100.0 : 0.0
+        r3_line  = signal_source == "V19" ? "3R:    " + str.tostring(three_r_px, format.mintick) + "\n" : "Exit:  50%@1R  40%@2R  run\n"
+        rgm_line = signal_source == "V19" ? regime_trend + " | " + regime_vol + (v19_vol_scale < 1.0 ? " (0.75x)" : "") + "\n" : ""
+        label.new(bar_index, low,
+             "LONG [" + signal_source + "]\n" +
+             rgm_line +
+             "Entry: " + str.tostring(close,    format.mintick) + "\n" +
+             "Stop:  " + str.tostring(stop_px,  format.mintick) + "\n" +
+             "1R:    " + str.tostring(one_r_px, format.mintick) + "\n" +
+             "2R:    " + str.tostring(two_r_px, format.mintick) + "\n" +
+             r3_line +
+             "Qty:   " + str.tostring(qty, "#.##") + "\n" +
+             "ATR%:  " + str.tostring(atr_pct, "#.##") + "%",
+             color=color.new(color.green, 10), textcolor=color.white,
+             style=label.style_label_up, size=size.small)
+
+if short_signal and direction == 0
+    sd_entry_dist = atr_val * entry_mult
+    entry_px      := close
+    stop_px       := close + sd_entry_dist
+    one_r_px      := close - sd_entry_dist
+    two_r_px      := close - sd_entry_dist * 2.0
+    three_r_px    := signal_source == "V19" ? close - sd_entry_dist * 3.0 : na
+    entry_atr_val := atr_val
+    hwm           := close
+    partial_state := 0
+    direction     := -1
+    trade_src     := signal_source
+    be_locked     := false
+
+    qty = sd_entry_dist > 0 ? account_equity * risk_pct / 100.0 / sd_entry_dist : 0.0
+
+    if show_targets
+        line.new(bar_index, stop_px,  bar_index + 80, stop_px,  color=color.new(color.red,    40), style=line.style_dotted, width=1)
+        line.new(bar_index, one_r_px, bar_index + 80, one_r_px, color=color.new(color.yellow, 40), style=line.style_dotted, width=1)
+        line.new(bar_index, two_r_px, bar_index + 80, two_r_px, color=color.new(color.orange, 40), style=line.style_dotted, width=1)
+        if signal_source == "V19"
+            line.new(bar_index, three_r_px, bar_index + 80, three_r_px, color=color.new(color.lime, 40), style=line.style_dotted, width=1)
+
+    if show_labels
+        vd = vwap_val > 0 ? (close - vwap_val) / vwap_val * 100.0 : 0.0
+        r3_line  = signal_source == "V19" ? "3R:    " + str.tostring(three_r_px, format.mintick) + "\n" : "Exit:  50%@1R  40%@2R  run\n"
+        rgm_line = signal_source == "V19" ? regime_trend + " | " + regime_vol + (v19_vol_scale < 1.0 ? " (0.75x)" : "") + "\n" : ""
+        label.new(bar_index, high,
+             "SHORT [" + signal_source + "]\n" +
+             rgm_line +
+             "Entry: " + str.tostring(close,    format.mintick) + "\n" +
+             "Stop:  " + str.tostring(stop_px,  format.mintick) + "\n" +
+             "1R:    " + str.tostring(one_r_px, format.mintick) + "\n" +
+             "2R:    " + str.tostring(two_r_px, format.mintick) + "\n" +
+             r3_line +
+             "Qty:   " + str.tostring(qty, "#.##") + "\n" +
+             "ATR%:  " + str.tostring(atr_pct, "#.##") + "%",
+             color=color.new(color.red, 10), textcolor=color.white,
+             style=label.style_label_down, size=size.small)
+
+// ============================================================================
+// PLOTS
+// ============================================================================
+
+// V21: VWAP bands — shown on 4H only
+p_vwap  = plot(show_bands and is_v21_tf ? vwap_val   : na, "VWAP",       color=color.new(color.yellow, 0),  linewidth=2)
+p_upper = plot(show_bands and is_v21_tf ? upper_band : na, "Upper Band", color=color.new(color.red,    20), linewidth=1)
+p_lower = plot(show_bands and is_v21_tf ? lower_band : na, "Lower Band", color=color.new(color.green,  20), linewidth=1)
+fill(p_upper, p_vwap,  color=color.new(color.red,   93), title="Upper Fill")
+fill(p_vwap,  p_lower, color=color.new(color.green, 93), title="Lower Fill")
+
+// V19: squeeze range — shown on 15M only
+plot(show_squeeze and is_v19_tf and in_squeeze ? sq_hi : na, "Sq High", color=color.new(color.yellow, 20), style=plot.style_stepline, linewidth=2)
+plot(show_squeeze and is_v19_tf and in_squeeze ? sq_lo : na, "Sq Low",  color=color.new(color.yellow, 20), style=plot.style_stepline, linewidth=2)
+
+// Entry signals
+plotshape(v19_long_raw  and direction == 0, "V19 Long",  shape.triangleup,   location.belowbar, color.aqua,    size=size.normal)
+plotshape(v19_short_raw and direction == 0, "V19 Short", shape.triangledown, location.abovebar, color.fuchsia, size=size.normal)
+plotshape(v21_long_raw  and direction == 0, "V21 Long",  shape.triangleup,   location.belowbar, color.lime,    size=size.small)
+plotshape(v21_short_raw and direction == 0, "V21 Short", shape.triangledown, location.abovebar, color.red,     size=size.small)
+plotshape(exit_signal,                      "Exit",      shape.xcross,       location.abovebar, color.white,   size=size.tiny)
+
+// Stop and R levels while in trade
+stop_color = partial_state >= 1 ? color.new(color.green, 0) : color.new(color.red, 20)
+plot(direction != 0 ? stop_px    : na, "Stop", color=stop_color,                  style=plot.style_stepline, linewidth=2)
+plot(direction != 0 ? one_r_px   : na, "1R",   color=color.new(color.yellow, 40), style=plot.style_linebr,   linewidth=1)
+plot(direction != 0 ? two_r_px   : na, "2R",   color=color.new(color.orange, 40), style=plot.style_linebr,   linewidth=1)
+plot(direction != 0 ? three_r_px : na, "3R",   color=color.new(color.lime,   40), style=plot.style_linebr,   linewidth=1)
+
+// Squeeze bar tint (15M only)
+barcolor(is_v19_tf and is_squeezing ? color.new(color.yellow, 50) : na, title="Squeeze Bar")
+
+// Position backgrounds
+bgcolor(direction ==  1 ? color.new(color.green, 93) : na, title="Long Bg")
+bgcolor(direction == -1 ? color.new(color.red,   93) : na, title="Short Bg")
+bgcolor(is_v19_tf and in_squeeze and direction == 0 ? color.new(color.yellow, 94) : na, title="Squeeze Bg")
+
+// ============================================================================
+// DASHBOARD
+// ============================================================================
+
+v19_total = v19_w + v19_l
+v21_total = v21_w + v21_l
+v19_wr    = v19_total > 0 ? v19_w / v19_total * 100.0 : 0.0
+v21_wr    = v21_total > 0 ? v21_w / v21_total * 100.0 : 0.0
+
+wr_col(r) => r >= 40.0 ? color.green : r >= 30.0 ? color.yellow : color.red
+
+pos_text  = direction ==  1 ? "LONG [" + trade_src + "]" : direction == -1 ? "SHORT [" + trade_src + "]" : "FLAT"
+pos_color = direction ==  1 ? color.green : direction == -1 ? color.red : color.gray
+
+// Use 1R distance (one_r_px - entry_px) to compute current R — works for both longs and shorts
+one_r_dist = direction ==  1 and not na(one_r_px) ? one_r_px - entry_px :
+             direction == -1 and not na(one_r_px) ? entry_px - one_r_px : na
+cur_r      = not na(one_r_dist) and one_r_dist > 0 ?
+             (direction == 1 ? (close - entry_px) / one_r_dist : (entry_px - close) / one_r_dist) : na
+r_text     = not na(cur_r) ? str.tostring(cur_r, "+#.##") + "R [" + str.tostring(partial_state) + "/3 taken]" : "--"
+r_color    = not na(cur_r) ? (cur_r >= 0 ? color.green : color.red) : color.gray
+
+stop_text  = direction != 0 ? str.tostring(stop_px, format.mintick) + " TP" + str.tostring(partial_state) + "/3" + (partial_state >= 3 ? " runner" : "") : "--"
+sq_text    = in_squeeze ? str.tostring(sq_hi, format.mintick) + " / " + str.tostring(sq_lo, format.mintick) + " [" + str.tostring(sq_bar_count) + "b]" : "--"
+atr_color  = is_squeezing ? color.yellow : color.white
+
+regime_label = regime_trend + "_" + regime_vol + (v19_vol_scale < 1.0 ? " (0.75x)" : "")
+regime_color = regime_allowed ? (regime_trend == "uptrend" ? color.green : regime_trend == "downtrend" ? color.red : color.gray) : color.gray
+
+var table info = table.new(position.bottom_left, 2, 9, bgcolor=color.new(color.black, 80))
+if barstate.islast
+    table.cell(info, 0, 0, "TF",   text_color=color.white)
+    table.cell(info, 1, 0, tf_label, text_color=tf_color)
+
+    table.cell(info, 0, 1, "Pos",  text_color=color.white)
+    table.cell(info, 1, 1, pos_text, text_color=pos_color)
+
+    table.cell(info, 0, 2, "R",    text_color=color.white)
+    table.cell(info, 1, 2, r_text, text_color=r_color)
+
+    table.cell(info, 0, 3, "Stop", text_color=color.white)
+    table.cell(info, 1, 3, stop_text, text_color=direction != 0 ? color.yellow : color.gray)
+
+    table.cell(info, 0, 4, "ATR%", text_color=color.white)
+    table.cell(info, 1, 4, str.tostring(atr_pctile_rank, "#") + "% (sq<" + str.tostring(v19_sq_pctile) + ")", text_color=atr_color)
+
+    table.cell(info, 0, 5, "Sq",   text_color=color.white)
+    table.cell(info, 1, 5, sq_text, text_color=in_squeeze ? color.yellow : color.gray)
+
+    table.cell(info, 0, 6, "Rgm",  text_color=color.white)
+    table.cell(info, 1, 6, regime_allowed ? regime_label : "BLOCKED — " + regime_label, text_color=regime_color)
+
+    table.cell(info, 0, 7, "V19",  text_color=color.white)
+    table.cell(info, 1, 7, str.tostring(v19_w) + "/" + str.tostring(v19_l) + " " + str.tostring(v19_wr, "#") + "%", text_color=wr_col(v19_wr))
+
+    table.cell(info, 0, 8, "V21",  text_color=color.white)
+    table.cell(info, 1, 8, str.tostring(v21_w) + "/" + str.tostring(v21_l) + " " + str.tostring(v21_wr, "#") + "%", text_color=wr_col(v21_wr))
+
+// ============================================================================
+// ALERTS
+// ============================================================================
+
+alertcondition(v19_long_raw,  "V19 Long  (15M)", "V19: LONG squeeze breakout on " + syminfo.ticker)
+alertcondition(v19_short_raw, "V19 Short (15M)", "V19: SHORT squeeze breakout on " + syminfo.ticker)
+alertcondition(v21_long_raw,  "V21 Long  (4H)",  "V21: LONG VWAP reversal on "    + syminfo.ticker)
+alertcondition(v21_short_raw, "V21 Short (4H)",  "V21: SHORT VWAP reversal on "   + syminfo.ticker)
+alertcondition(exit_signal,   "Exit",             "Exit: Stop hit on "             + syminfo.ticker + " [" + trade_src + "]")

@@ -16,7 +16,7 @@ from typing import Dict, Any
 class BrokerConfig:
     """Broker configuration for backtests."""
     cash: float = 10000.0
-    commission: float = 0.001  # 0.1% per trade (typical crypto)
+    commission: float = 0.0005  # 0.05% per trade on notional value
     leverage: float = 100.0    # 100x leverage (crypto perps)
     risk_per_trade_pct: float = 3.0  # Risk 3% of account at stop loss
 
@@ -421,6 +421,20 @@ V19_PARAMS = {
     "early_be_dest": -0.5,      # Stop destination: halfway to stop loss
 }
 
+# V21 - VWAP Mean Reversion (4H Rolling Window)
+# Enters counter-trend at SD bands, confirmed reversal bar, R-based exits
+V21_PARAMS = {
+    "vwap_period": 50,          # 4H bars in VWAP window (optimized)
+    "sd_entry": 2.25,           # SD level to trigger setup (SOL/BTC default; ETH=2.0)
+    "sd_max": 2.5,              # Max SD — ignore if too extended
+    "atr_period": 14,           # ATR lookback
+    "atr_stop_mult": 2.75,      # Stop = ATR × mult (= 1R, optimized)
+    "atr_trailing_mult": 5.0,   # Runner trail = ATR × mult from HWM (V19-style, active from 1R)
+    "atr_vol_min_pct": 0.5,     # Min ATR% — filters flat/dead markets
+    "atr_vol_max_pct": 11.0,    # Max ATR% — filters explosive markets (optimized)
+    "risk_per_trade_pct": 3.0,  # Risk 3% per trade
+}
+
 # V20 - Short-Only Double Top & Head and Shoulders
 V20_PARAMS = {
     "swing_lookback": 5,           # Bars each side to confirm swing pivot
@@ -591,6 +605,7 @@ V13_PARAMS = {
 
 # Map strategy names to their parameter sets
 STRATEGY_PARAMS: Dict[str, Dict[str, Any]] = {
+    "v21": V21_PARAMS,
     "v20": V20_PARAMS,
     "v19": V19_PARAMS,
     "v18": V18_PARAMS,
@@ -645,8 +660,10 @@ def register_strategies():
     from strategies.sol_strategy_v18 import SolStrategyV18
     from strategies.sol_strategy_v19 import SolStrategyV19
     from strategies.sol_strategy_v20 import SolStrategyV20
+    from strategies.sol_strategy_v21 import SolStrategyV21
 
     STRATEGY_CLASSES.update({
+        "v21": SolStrategyV21,
         "v20": SolStrategyV20,
         "v19": SolStrategyV19,
         "v18": SolStrategyV18,
