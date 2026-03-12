@@ -9,16 +9,21 @@ indicator("V21 VWAP Mean Reversion", overlay=true, max_lines_count=500, max_labe
 // LONG:  Previous 4H bar closed BELOW lower SD band → current closes BACK ABOVE it
 // SHORT: Previous 4H bar closed ABOVE upper SD band → current closes BACK BELOW it
 //
-// ATR volatility filter: skip when ATR% is outside [atr_vol_min, atr_vol_max]
+// Filters:
+//   ATR volatility filter: skip when ATR% is outside [atr_vol_min, atr_vol_max]
+//   VWAP distance filter:  skip if VWAP is closer than min_vwap_mult × ATR (calm market)
+//   Regime filter:         no longs in downtrend, no shorts in uptrend
 //
-// Exits: 50% at 1R, 40% at 2R, 10% runner with ATR trail (V19 style, 5x ATR from 1R)
-//        Stop ratchets: breakeven at 1R, +1R at 2R; trail active from 1R hit
+// Stop management (V19-style):
+//   Stop = entry ± ATR × atr_stop_mult  (= 1R)
+//   At +0.75R: stop moves to -0.5R  (early cushion)
+//   At +1R:    stop moves to BE, 5× ATR trail from HWM starts
 //
-// Asset-specific optimized params load automatically (override via inputs):
-//   ETH: sd_entry=2.0,  atr_stop_mult=2.75, vwap_period=50, atr_vol_max=11%
-//   SOL: sd_entry=2.25, atr_stop_mult=2.75, vwap_period=50, atr_vol_max=11%
-//   BTC: sd_entry=2.25, atr_stop_mult=2.75, vwap_period=50, atr_vol_max=11% (pending optimizer)
-//   Other: same as BTC/SOL defaults
+// Exits:
+//   90% at VWAP (wick-based — mirrors limit order fill at exchange)
+//   10% runner continues on ATR trail already active from 1R hit
+//
+// Win condition: wick touches VWAP (high >= vwap_target for longs)
 
 // ============================================================================
 // ASSET DETECTION
@@ -28,30 +33,66 @@ is_eth = str.contains(syminfo.ticker, "ETH")
 is_sol = str.contains(syminfo.ticker, "SOL")
 is_btc = str.contains(syminfo.ticker, "BTC")
 
-asset_label = is_eth ? "ETH (optimized)" : is_sol ? "SOL (optimized)" : is_btc ? "BTC (pending)" : "Default"
+asset_label = is_eth ? "ETH" : is_sol ? "SOL" : is_btc ? "BTC" : "default"
 
 // ============================================================================
-// PARAMETERS (0 = auto-select by asset)
+// PARAMETERS
 // ============================================================================
 
 vwap_period_inp  = input.int  (0,    "VWAP Period (0=auto)",       group="Parameters", minval=0, maxval=200)
 sd_entry_inp     = input.float(0.0,  "SD Entry Bands (0=auto)",    group="Parameters", step=0.25, minval=0)
 atr_mult_inp     = input.float(0.0,  "ATR Stop Mult (0=auto)",     group="Parameters", step=0.25, minval=0)
+min_vwap_inp     = input.float(2.0,  "Min VWAP Distance (× ATR)",  group="Parameters", step=0.25, minval=0,
+     tooltip="Skip entry if VWAP is closer than this many ATRs. Filters calm markets.")
 atr_vol_max_inp  = input.float(0.0,  "ATR Vol Max % (0=auto)",     group="Parameters", step=0.5,  minval=0)
 atr_vol_min_inp  = input.float(0.5,  "ATR Vol Min %",              group="Parameters", step=0.1,  minval=0)
 atr_period       = input.int  (14,   "ATR Period",                 group="Parameters")
 atr_trail_mult   = input.float(5.0,  "ATR Trail Mult (runner)",    group="Parameters", step=0.25)
+early_be_trig    = input.float(0.75, "Early BE Trigger (× 1R)",   group="Parameters", step=0.05, minval=0.1, maxval=0.99,
+     tooltip="Move stop early when price reaches this fraction of 1R")
+early_be_dest    = input.float(0.5,  "Early BE Dest (× 1R back)",  group="Parameters", step=0.05, minval=0.0, maxval=0.99,
+     tooltip="Move stop to -dest × 1R (halfway to entry by default)")
 
-// Resolve auto values
-vwap_per      = vwap_period_inp > 0   ? vwap_period_inp : 50
-sd_entry      = sd_entry_inp    > 0.0 ? sd_entry_inp    : is_eth ? 2.0 : 2.25
-atr_stop_mult = atr_mult_inp    > 0.0 ? atr_mult_inp    : 2.75
-atr_vol_max   = atr_vol_max_inp > 0.0 ? atr_vol_max_inp : 11.0
+// Resolve auto values — walk-forward validated 2026-03 (r_expectancy metric):
+//   SOL: vwap=65, sd=2.25, stop=1.0×, min_vwap=3.25×, vol_max=8%  → OOS +17.5%, +0.20R
+//   ETH: vwap=70, sd=2.75, stop=1.25×, min_vwap=3.5×, vol_max=7.5% → OOS +22.9%, +0.78R
+//   BTC: use SOL defaults (BTC WF params too restrictive — thin trade count)
+vwap_per      = vwap_period_inp > 0   ? vwap_period_inp : is_eth ? 70 : 65
+sd_entry      = sd_entry_inp    > 0.0 ? sd_entry_inp    : is_eth ? 2.75 : 2.25
+atr_stop_mult = atr_mult_inp    > 0.0 ? atr_mult_inp    : is_eth ? 1.25 : 1.0
+atr_vol_max   = atr_vol_max_inp > 0.0 ? atr_vol_max_inp : is_eth ? 7.5 : 8.0
 atr_vol_min   = atr_vol_min_inp
+min_vwap_mult = min_vwap_inp > 0.0 ? min_vwap_inp : is_eth ? 3.5 : 3.25
 
-// Display
+// ============================================================================
+// REGIME FILTER
+// ============================================================================
+
+use_regime       = input.bool(true,  "Enable Regime Filter",          group="Regime Filter",
+     tooltip="Block counter-trend mean reversion: no longs in downtrend, no shorts in uptrend")
+allow_lt_long    = input.bool(false, "Allow Longs in Downtrend",      group="Regime Filter",
+     tooltip="Enable to allow longs even when daily trend is down (not recommended)")
+allow_ut_short   = input.bool(false, "Allow Shorts in Uptrend",       group="Regime Filter",
+     tooltip="Enable to allow shorts even when daily trend is up (not recommended)")
+
+// Daily EMA(21) for trend regime (lock to previous bar to avoid mid-bar flicker)
+daily_ema_live   = request.security(syminfo.tickerid, "1D", ta.ema(close, 21))
+daily_close_live = request.security(syminfo.tickerid, "1D", close)
+daily_ema        = daily_ema_live[1]
+daily_close      = daily_close_live[1]
+
+ema_slope        = daily_ema[5] > 0 ? (daily_ema - daily_ema[5]) / daily_ema[5] * 100 : 0.0
+regime           = ema_slope > 0 and daily_close > daily_ema ? "uptrend" : ema_slope < 0 and daily_close < daily_ema ? "downtrend" : "ranging"
+
+long_regime_ok   = not use_regime or regime != "downtrend" or allow_lt_long
+short_regime_ok  = not use_regime or regime != "uptrend"   or allow_ut_short
+
+// ============================================================================
+// DISPLAY
+// ============================================================================
+
 show_labels   = input.bool(true, "Show Entry/Exit Labels",  group="Display")
-show_targets  = input.bool(true, "Show R-Level Lines",      group="Display")
+show_targets  = input.bool(true, "Show Target Lines",       group="Display")
 show_bands    = input.bool(true, "Show VWAP & SD Bands",    group="Display")
 
 // Account
@@ -66,14 +107,12 @@ enable_shorts = input.bool(true,  "Enable Shorts", group="Direction")
 // ROLLING VWAP + SD BANDS
 // ============================================================================
 
-// Rolling VWAP (volume-weighted, not session-based)
 tp      = (high + low + close) / 3.0
 tpv     = tp * volume
 sum_tpv = math.sum(tpv, vwap_per)
 sum_vol = math.sum(volume, vwap_per)
 vwap_val = sum_vol > 0 ? sum_tpv / sum_vol : na
 
-// Population SD of close prices around VWAP (matches Python strategy exactly)
 var float sq_sum = 0.0
 sq_sum := 0.0
 for i = 0 to vwap_per - 1
@@ -85,19 +124,20 @@ upper_band = vwap_val + sd_entry * sd_val
 lower_band = vwap_val - sd_entry * sd_val
 
 // ============================================================================
-// ATR & VOLATILITY FILTER
+// ATR & FILTERS
 // ============================================================================
 
-atr_val = ta.atr(atr_period)
-atr_pct = atr_val / close * 100
-vol_ok  = atr_pct >= atr_vol_min and atr_pct <= atr_vol_max
+atr_val      = ta.atr(atr_period)
+atr_pct      = atr_val / close * 100
+vol_ok       = atr_pct >= atr_vol_min and atr_pct <= atr_vol_max
+vwap_dist_ok = math.abs(close - vwap_val) >= atr_val * min_vwap_mult
 
 // ============================================================================
 // ENTRY SIGNALS — 2-bar reversal at SD bands
 // ============================================================================
 
-long_signal  = enable_longs  and not na(lower_band[1]) and close[1] <= lower_band[1] and close > lower_band and vol_ok
-short_signal = enable_shorts and not na(upper_band[1]) and close[1] >= upper_band[1] and close < upper_band and vol_ok
+long_signal  = enable_longs  and not na(lower_band[1]) and close[1] <= lower_band[1] and close > lower_band and vol_ok and vwap_dist_ok and long_regime_ok
+short_signal = enable_shorts and not na(upper_band[1]) and close[1] >= upper_band[1] and close < upper_band and vol_ok and vwap_dist_ok and short_regime_ok
 
 // ============================================================================
 // TRADE STATE
@@ -106,104 +146,103 @@ short_signal = enable_shorts and not na(upper_band[1]) and close[1] >= upper_ban
 var int   wins          = 0
 var int   losses        = 0
 
-var int   direction     = 0      // 0=flat, 1=long, -1=short
+var int   direction     = 0        // 0=flat, 1=long, -1=short
 var float entry_px      = na
 var float stop_px       = na
-var float one_r_px      = na
-var float two_r_px      = na
+var float one_r_px      = na       // Entry ± 1R (stop management reference)
+var float vwap_target   = na       // VWAP at entry — 90% exit target
 var float entry_atr_val = na
-var float hwm           = na     // high/low water mark for runner trail
-var int   partial_state = 0      // 0=none, 1=1R hit (50% out, BE stop), 2=2R hit (90% out, +1R stop+trail)
+var float hwm           = na       // High/low water mark for runner trail
+var bool  early_be_done = false    // 0.75R early stop move done
+var int   partial_state = 0        // 0=pre-1R, 1=1R hit (trail/BE), 2=VWAP hit (90% out)
 
 // ============================================================================
-// STOP RATCHETING & RUNNER TRAIL (runs each bar while in trade)
+// STOP MANAGEMENT & RUNNER TRAIL (runs each bar while in trade)
 // ============================================================================
 
 if direction == 1
     hwm := math.max(hwm, high)
 
-    // Runner trail from HWM after 1R (V19 style — 5x ATR)
+    // Pre-1R stop management
+    if partial_state == 0
+        // 0.75R early stop cushion
+        if not early_be_done and close >= entry_px + early_be_trig * (one_r_px - entry_px)
+            stop_px      := math.max(stop_px, entry_px - early_be_dest * (one_r_px - entry_px))
+            early_be_done := true
+        // 1R hit: stop to BE, trail starts
+        if close > one_r_px
+            partial_state := 1
+            stop_px       := math.max(stop_px, entry_px)
+
+    // ATR trail from HWM after 1R
     if partial_state >= 1
-        trail = hwm - entry_atr_val * atr_trail_mult
+        trail  = hwm - entry_atr_val * atr_trail_mult
         stop_px := math.max(stop_px, trail)
 
-    // 1R hit: take 50%, ratchet stop to breakeven, start trail
-    if partial_state == 0 and high >= one_r_px
-        partial_state := 1
-        stop_px := entry_px
-        if show_labels
-            label.new(bar_index, low, "1R ✓\n50% out\nBE stop", color=color.new(color.teal, 20),
-                 textcolor=color.white, style=label.style_label_up, size=size.tiny)
-
-    // 2R hit: take 40% (90% total out), ratchet stop to +1R
-    else if partial_state == 1 and high >= two_r_px
+    // VWAP hit (wick): 90% out, count as win
+    if partial_state < 2 and high >= vwap_target
         partial_state := 2
-        stop_px := math.max(stop_px, one_r_px)
+        wins          += 1
         if show_labels
-            label.new(bar_index, low, "2R ✓\n40% out\n+1R stop", color=color.new(color.teal, 20),
+            label.new(bar_index, low, "VWAP ✓\n90% out\nRunner", color=color.new(color.teal, 20),
                  textcolor=color.white, style=label.style_label_up, size=size.tiny)
 
 if direction == -1
     hwm := math.min(hwm, low)
 
-    // Runner trail from LWM after 1R (V19 style — 5x ATR)
+    if partial_state == 0
+        if not early_be_done and close <= entry_px - early_be_trig * (entry_px - one_r_px)
+            stop_px       := math.min(stop_px, entry_px + early_be_dest * (entry_px - one_r_px))
+            early_be_done := true
+        if close < one_r_px
+            partial_state := 1
+            stop_px       := math.min(stop_px, entry_px)
+
     if partial_state >= 1
-        trail = hwm + entry_atr_val * atr_trail_mult
+        trail  = hwm + entry_atr_val * atr_trail_mult
         stop_px := math.min(stop_px, trail)
 
-    // 1R hit: take 50%, ratchet stop to breakeven, start trail
-    if partial_state == 0 and low <= one_r_px
-        partial_state := 1
-        stop_px := entry_px
-        if show_labels
-            label.new(bar_index, high, "1R ✓\n50% out\nBE stop", color=color.new(color.teal, 20),
-                 textcolor=color.white, style=label.style_label_down, size=size.tiny)
-
-    // 2R hit: take 40% (90% total out), ratchet stop to +1R
-    else if partial_state == 1 and low <= two_r_px
+    if partial_state < 2 and low <= vwap_target
         partial_state := 2
-        stop_px := math.min(stop_px, one_r_px)
+        wins          += 1
         if show_labels
-            label.new(bar_index, high, "2R ✓\n40% out\n+1R stop", color=color.new(color.teal, 20),
+            label.new(bar_index, high, "VWAP ✓\n90% out\nRunner", color=color.new(color.teal, 20),
                  textcolor=color.white, style=label.style_label_down, size=size.tiny)
 
 // ============================================================================
-// EXIT DETECTION
+// EXIT DETECTION (stop hit — exits full position or remaining 10% runner)
 // ============================================================================
 
 var bool exit_signal = false
 exit_signal := false
 
 if direction == 1 and low <= stop_px
-    // Win = reached 1R at minimum (50% taken out, stop at BE or better)
-    if partial_state >= 1
-        wins += 1
-    else
-        losses += 1
-    exit_signal := true
+    if partial_state < 2
+        losses += 1    // No win — VWAP never hit
+    // partial_state == 2: win already counted when VWAP wick hit
+    exit_signal   := true
     direction     := 0
     entry_px      := na
     stop_px       := na
     one_r_px      := na
-    two_r_px      := na
+    vwap_target   := na
     entry_atr_val := na
     hwm           := na
+    early_be_done := false
     partial_state := 0
 
 if direction == -1 and high >= stop_px
-    // Win = reached 1R at minimum (50% taken out, stop at BE or better)
-    if partial_state >= 1
-        wins += 1
-    else
+    if partial_state < 2
         losses += 1
-    exit_signal := true
+    exit_signal   := true
     direction     := 0
     entry_px      := na
     stop_px       := na
     one_r_px      := na
-    two_r_px      := na
+    vwap_target   := na
     entry_atr_val := na
     hwm           := na
+    early_be_done := false
     partial_state := 0
 
 // ============================================================================
@@ -214,33 +253,36 @@ if long_signal and direction == 0
     stop_dist     = atr_val * atr_stop_mult
     entry_px      := close
     stop_px       := close - stop_dist
-    one_r_px      := close + stop_dist
-    two_r_px      := close + stop_dist * 2.0
+    one_r_px      := close + stop_dist           // 1R reference for stop management
+    vwap_target   := vwap_val                    // VWAP = 90% exit target
     entry_atr_val := atr_val
     hwm           := close
+    early_be_done := false
     partial_state := 0
     direction     := 1
 
-    risk_amt = account_equity * risk_pct / 100.0
-    qty      = stop_dist > 0 ? risk_amt / stop_dist : 0.0
+    risk_amt  = account_equity * risk_pct / 100.0
+    qty       = stop_dist > 0 ? risk_amt / stop_dist : 0.0
     vwap_dist = vwap_val > 0 ? (close - vwap_val) / vwap_val * 100.0 : 0.0
+    vwap_r    = stop_dist > 0 ? math.abs(close - vwap_val) / stop_dist : 0.0
 
     if show_targets
-        line.new(bar_index, stop_px,  bar_index + 60, stop_px,  color=color.new(color.red,    40), style=line.style_dotted, width=1)
-        line.new(bar_index, one_r_px, bar_index + 60, one_r_px, color=color.new(color.yellow, 40), style=line.style_dotted, width=1)
-        line.new(bar_index, two_r_px, bar_index + 60, two_r_px, color=color.new(color.orange, 40), style=line.style_dotted, width=1)
+        line.new(bar_index, stop_px,    bar_index + 60, stop_px,    color=color.new(color.red,    40), style=line.style_dotted, width=1)
+        line.new(bar_index, one_r_px,   bar_index + 60, one_r_px,   color=color.new(color.gray,   60), style=line.style_dotted, width=1)
+        line.new(bar_index, vwap_target, bar_index + 60, vwap_target, color=color.new(color.yellow, 30), style=line.style_dashed, width=2)
 
     if show_labels
+        rgm_line = use_regime ? regime + "\n" : ""
         label.new(bar_index, low,
-             "LONG\n" +
-             "Entry: " + str.tostring(close,    "#.####") + "\n" +
-             "Stop:  " + str.tostring(stop_px,  "#.####") + "\n" +
-             "1R:    " + str.tostring(one_r_px, "#.####") + " (50%)\n" +
-             "2R:    " + str.tostring(two_r_px, "#.####") + " (40%)\n" +
-             "Trail: " + str.tostring(atr_trail_mult, "#.#") + "x ATR runner\n" +
-             "Qty:   " + str.tostring(qty, "#.##") + "\n" +
-             "ATR%:  " + str.tostring(atr_pct, "#.##") + "%" + "\n" +
-             "VWAP Δ:" + str.tostring(vwap_dist, "#.##") + "%",
+             "LONG [V21]\n" +
+             rgm_line +
+             "Entry:  " + str.tostring(close,       format.mintick) + "\n" +
+             "Stop:   " + str.tostring(stop_px,     format.mintick) + "  (-1R)\n" +
+             "1R:     " + str.tostring(one_r_px,    format.mintick) + "  (trail starts)\n" +
+             "VWAP:   " + str.tostring(vwap_target, format.mintick) + "  (" + str.tostring(vwap_r, "#.#") + "R, 90%)\n" +
+             "Qty:    " + str.tostring(qty, "#.##") + "\n" +
+             "ATR%:   " + str.tostring(atr_pct, "#.##") + "%" + "\n" +
+             "VWAP Δ: " + str.tostring(vwap_dist, "#.##") + "%",
              color=color.new(color.green, 10), textcolor=color.white,
              style=label.style_label_up, size=size.small)
 
@@ -249,32 +291,35 @@ if short_signal and direction == 0
     entry_px      := close
     stop_px       := close + stop_dist
     one_r_px      := close - stop_dist
-    two_r_px      := close - stop_dist * 2.0
+    vwap_target   := vwap_val
     entry_atr_val := atr_val
     hwm           := close
+    early_be_done := false
     partial_state := 0
     direction     := -1
 
-    risk_amt = account_equity * risk_pct / 100.0
-    qty      = stop_dist > 0 ? risk_amt / stop_dist : 0.0
+    risk_amt  = account_equity * risk_pct / 100.0
+    qty       = stop_dist > 0 ? risk_amt / stop_dist : 0.0
     vwap_dist = vwap_val > 0 ? (close - vwap_val) / vwap_val * 100.0 : 0.0
+    vwap_r    = stop_dist > 0 ? math.abs(close - vwap_val) / stop_dist : 0.0
 
     if show_targets
-        line.new(bar_index, stop_px,  bar_index + 60, stop_px,  color=color.new(color.red,    40), style=line.style_dotted, width=1)
-        line.new(bar_index, one_r_px, bar_index + 60, one_r_px, color=color.new(color.yellow, 40), style=line.style_dotted, width=1)
-        line.new(bar_index, two_r_px, bar_index + 60, two_r_px, color=color.new(color.orange, 40), style=line.style_dotted, width=1)
+        line.new(bar_index, stop_px,    bar_index + 60, stop_px,    color=color.new(color.red,    40), style=line.style_dotted, width=1)
+        line.new(bar_index, one_r_px,   bar_index + 60, one_r_px,   color=color.new(color.gray,   60), style=line.style_dotted, width=1)
+        line.new(bar_index, vwap_target, bar_index + 60, vwap_target, color=color.new(color.yellow, 30), style=line.style_dashed, width=2)
 
     if show_labels
+        rgm_line = use_regime ? regime + "\n" : ""
         label.new(bar_index, high,
-             "SHORT\n" +
-             "Entry: " + str.tostring(close,    "#.####") + "\n" +
-             "Stop:  " + str.tostring(stop_px,  "#.####") + "\n" +
-             "1R:    " + str.tostring(one_r_px, "#.####") + " (50%)\n" +
-             "2R:    " + str.tostring(two_r_px, "#.####") + " (40%)\n" +
-             "Trail: " + str.tostring(atr_trail_mult, "#.#") + "x ATR runner\n" +
-             "Qty:   " + str.tostring(qty, "#.##") + "\n" +
-             "ATR%:  " + str.tostring(atr_pct, "#.##") + "%" + "\n" +
-             "VWAP Δ:" + str.tostring(vwap_dist, "#.##") + "%",
+             "SHORT [V21]\n" +
+             rgm_line +
+             "Entry:  " + str.tostring(close,       format.mintick) + "\n" +
+             "Stop:   " + str.tostring(stop_px,     format.mintick) + "  (-1R)\n" +
+             "1R:     " + str.tostring(one_r_px,    format.mintick) + "  (trail starts)\n" +
+             "VWAP:   " + str.tostring(vwap_target, format.mintick) + "  (" + str.tostring(vwap_r, "#.#") + "R, 90%)\n" +
+             "Qty:    " + str.tostring(qty, "#.##") + "\n" +
+             "ATR%:   " + str.tostring(atr_pct, "#.##") + "%" + "\n" +
+             "VWAP Δ: " + str.tostring(vwap_dist, "#.##") + "%",
              color=color.new(color.red, 10), textcolor=color.white,
              style=label.style_label_down, size=size.small)
 
@@ -290,18 +335,24 @@ fill(p_upper, p_vwap,  color=color.new(color.red,   95), title="Upper Fill")
 fill(p_vwap,  p_lower, color=color.new(color.green, 95), title="Lower Fill")
 
 // Entry / exit signals
-plotshape(long_signal,  "Long Signal",  shape.triangleup,   location.belowbar, color.lime,  size=size.small)
-plotshape(short_signal, "Short Signal", shape.triangledown, location.abovebar, color.red,   size=size.small)
-plotshape(exit_signal,  "Exit",         shape.xcross,       location.abovebar, color.white, size=size.tiny)
+plotshape(long_signal  and direction == 0, "Long Signal",  shape.triangleup,   location.belowbar, color.lime,  size=size.small)
+plotshape(short_signal and direction == 0, "Short Signal", shape.triangledown, location.abovebar, color.red,   size=size.small)
+plotshape(exit_signal,                     "Exit",         shape.xcross,       location.abovebar, color.white, size=size.tiny)
 
-// Dynamic stop (green = ratcheted to profit, red = original risk)
+// Dynamic stop (green when protected, red when at original risk)
 stop_color = partial_state >= 1 ? color.new(color.green, 0) : color.new(color.red, 20)
-plot(direction != 0 ? stop_px  : na, "Stop", color=stop_color,                  style=plot.style_stepline, linewidth=2)
-plot(direction != 0 ? one_r_px : na, "1R",   color=color.new(color.yellow, 40), style=plot.style_linebr,   linewidth=1)
-plot(direction != 0 ? two_r_px : na, "2R",   color=color.new(color.orange, 40), style=plot.style_linebr,   linewidth=1)
+plot(direction != 0 ? stop_px    : na, "Stop",   color=stop_color,                  style=plot.style_stepline, linewidth=2)
+plot(direction != 0 ? one_r_px   : na, "1R ref", color=color.new(color.gray,   60), style=plot.style_linebr,   linewidth=1)
+plot(direction != 0 ? vwap_target : na, "VWAP T", color=color.new(color.yellow, 30), style=plot.style_linebr,   linewidth=2)
 
-// Gray background when vol filter is blocking entries
-bgcolor(not vol_ok and direction == 0 ? color.new(color.gray, 93) : na, title="Vol Filtered")
+// Regime-blocked background (dim red/green when regime is blocking)
+long_blocked  = use_regime and not long_regime_ok  and direction == 0
+short_blocked = use_regime and not short_regime_ok and direction == 0
+bgcolor(long_blocked  ? color.new(color.red,   96) : na, title="Longs Blocked (downtrend)")
+bgcolor(short_blocked ? color.new(color.green, 96) : na, title="Shorts Blocked (uptrend)")
+
+// Gray when vol/vwap filters are blocking entries
+bgcolor(not vol_ok and direction == 0 ? color.new(color.gray, 96) : na, title="Vol Filtered")
 
 // ============================================================================
 // DASHBOARD
@@ -309,57 +360,62 @@ bgcolor(not vol_ok and direction == 0 ? color.new(color.gray, 93) : na, title="V
 
 pos_label = direction == 1 ? "LONG" : direction == -1 ? "SHORT" : "FLAT"
 pos_color = direction == 1 ? color.green : direction == -1 ? color.red : color.gray
-partial_label = partial_state == 0 ? "none" : partial_state == 1 ? "1R (50% out)" : "2R (90% out)"
 
-var table dash = table.new(position.top_right, 2, 11,
+stage_label = partial_state == 0 ? (early_be_done ? "pre-1R (early BE done)" : "pre-1R") : partial_state == 1 ? "1R hit (trail active)" : "VWAP hit (90% out)"
+stage_color = partial_state == 0 ? color.gray : partial_state == 1 ? color.yellow : color.teal
+
+regime_color = regime == "uptrend" ? color.green : regime == "downtrend" ? color.red : color.gray
+
+var table dash = table.new(position.top_right, 2, 12,
      bgcolor=color.new(color.black, 75), border_width=1, border_color=color.new(color.gray, 60))
 
 if barstate.islast
-    table.cell(dash, 0, 0, "Strategy",    text_color=color.gray,   text_size=size.small)
-    table.cell(dash, 1, 0, "V21 VWAP MR", text_color=color.white,  text_size=size.small)
+    table.cell(dash, 0, 0,  "Strategy",    text_color=color.gray,   text_size=size.small)
+    table.cell(dash, 1, 0,  "V21 VWAP MR", text_color=color.white,  text_size=size.small)
 
-    table.cell(dash, 0, 1, "Params",      text_color=color.gray,   text_size=size.small)
-    table.cell(dash, 1, 1, asset_label,   text_color=color.yellow, text_size=size.small)
+    table.cell(dash, 0, 1,  "Asset",       text_color=color.gray,   text_size=size.small)
+    table.cell(dash, 1, 1,  asset_label,   text_color=color.yellow, text_size=size.small)
 
-    table.cell(dash, 0, 2, "VWAP Period", text_color=color.gray,   text_size=size.small)
-    table.cell(dash, 1, 2, str.tostring(vwap_per), text_color=color.white, text_size=size.small)
+    table.cell(dash, 0, 2,  "Regime",      text_color=color.gray,   text_size=size.small)
+    table.cell(dash, 1, 2,  use_regime ? regime : "off", text_color=use_regime ? regime_color : color.gray, text_size=size.small)
 
-    table.cell(dash, 0, 3, "SD Entry",    text_color=color.gray,   text_size=size.small)
-    table.cell(dash, 1, 3, str.tostring(sd_entry, "#.##"), text_color=color.white, text_size=size.small)
+    table.cell(dash, 0, 3,  "VWAP Period", text_color=color.gray,   text_size=size.small)
+    table.cell(dash, 1, 3,  str.tostring(vwap_per), text_color=color.white, text_size=size.small)
 
-    table.cell(dash, 0, 4, "ATR Mult",    text_color=color.gray,   text_size=size.small)
-    table.cell(dash, 1, 4, str.tostring(atr_stop_mult, "#.##"), text_color=color.white, text_size=size.small)
+    table.cell(dash, 0, 4,  "SD Entry",    text_color=color.gray,   text_size=size.small)
+    table.cell(dash, 1, 4,  str.tostring(sd_entry, "#.##"), text_color=color.white, text_size=size.small)
 
-    table.cell(dash, 0, 5, "ATR Vol Max", text_color=color.gray,   text_size=size.small)
-    table.cell(dash, 1, 5, str.tostring(atr_vol_max, "#.#") + "%", text_color=color.white, text_size=size.small)
+    table.cell(dash, 0, 5,  "ATR Mult",    text_color=color.gray,   text_size=size.small)
+    table.cell(dash, 1, 5,  str.tostring(atr_stop_mult, "#.##") + "x", text_color=color.white, text_size=size.small)
 
-    table.cell(dash, 0, 6, "Current ATR%",text_color=color.gray,   text_size=size.small)
-    table.cell(dash, 1, 6, str.tostring(atr_pct, "#.##") + "%",
+    table.cell(dash, 0, 6,  "Min VWAP",    text_color=color.gray,   text_size=size.small)
+    table.cell(dash, 1, 6,  str.tostring(min_vwap_mult, "#.#") + "× ATR", text_color=color.white, text_size=size.small)
+
+    table.cell(dash, 0, 7,  "ATR%",        text_color=color.gray,   text_size=size.small)
+    table.cell(dash, 1, 7,  str.tostring(atr_pct, "#.##") + "% " + (vol_ok ? "✓" : "✗"),
          text_color=vol_ok ? color.green : color.red, text_size=size.small)
 
-    table.cell(dash, 0, 7, "Position",    text_color=color.gray,   text_size=size.small)
-    table.cell(dash, 1, 7, pos_label,     text_color=pos_color,    text_size=size.small)
+    table.cell(dash, 0, 8,  "Position",    text_color=color.gray,   text_size=size.small)
+    table.cell(dash, 1, 8,  pos_label,     text_color=pos_color,    text_size=size.small)
 
-    table.cell(dash, 0, 8, "Partials",    text_color=color.gray,   text_size=size.small)
-    table.cell(dash, 1, 8, partial_label,
-         text_color=partial_state > 0 ? color.teal : color.gray, text_size=size.small)
+    table.cell(dash, 0, 9,  "Stage",       text_color=color.gray,   text_size=size.small)
+    table.cell(dash, 1, 9,  stage_label,   text_color=stage_color,  text_size=size.small)
 
-    table.cell(dash, 0, 9, "Stop State",  text_color=color.gray,   text_size=size.small)
-    stop_state_label = partial_state == 0 ? "Initial risk" : partial_state == 1 ? "BE + trail" : "+1R + trail"
-    table.cell(dash, 1, 9, stop_state_label,
-         text_color=partial_state > 0 ? color.green : color.red, text_size=size.small)
+    table.cell(dash, 0, 10, "Stop",        text_color=color.gray,   text_size=size.small)
+    table.cell(dash, 1, 10, direction != 0 ? str.tostring(stop_px, format.mintick) : "--",
+         text_color=partial_state >= 1 ? color.green : color.red, text_size=size.small)
 
     total_trades = wins + losses
     wr = total_trades > 0 ? wins / total_trades * 100.0 : 0.0
     wr_col = wr >= 50 ? color.green : wr >= 40 ? color.yellow : color.red
-    table.cell(dash, 0, 10, "W/L",        text_color=color.gray,   text_size=size.small)
-    table.cell(dash, 1, 10, str.tostring(wins) + "W / " + str.tostring(losses) + "L  " + str.tostring(wr, "#") + "%",
+    table.cell(dash, 0, 11, "W/L",         text_color=color.gray,   text_size=size.small)
+    table.cell(dash, 1, 11, str.tostring(wins) + "W / " + str.tostring(losses) + "L  " + str.tostring(wr, "#") + "%",
          text_color=wr_col, text_size=size.small)
 
 // ============================================================================
 // ALERTS
 // ============================================================================
 
-alertcondition(long_signal,  "V21 Long Entry",  "V21: LONG signal on " + syminfo.ticker + " — close reverted above lower VWAP band")
-alertcondition(short_signal, "V21 Short Entry", "V21: SHORT signal on " + syminfo.ticker + " — close reverted below upper VWAP band")
-alertcondition(exit_signal,  "V21 Exit",        "V21: Stop hit on " + syminfo.ticker + " — position closed")
+alertcondition(long_signal  and direction == 0, "V21 Long Entry",  "V21: LONG signal on " + syminfo.ticker + " — VWAP reversion setup")
+alertcondition(short_signal and direction == 0, "V21 Short Entry", "V21: SHORT signal on " + syminfo.ticker + " — VWAP reversion setup")
+alertcondition(exit_signal,                     "V21 Exit",        "V21: Position closed on " + syminfo.ticker)

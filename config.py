@@ -422,17 +422,57 @@ V19_PARAMS = {
 }
 
 # V21 - VWAP Mean Reversion (4H Rolling Window)
-# Enters counter-trend at SD bands, confirmed reversal bar, R-based exits
+# Enters counter-trend at SD bands, confirmed reversal bar
+# Exits: 90% at VWAP (wick), 10% runner on ATR trail
+# Stop management: 0.75R → -0.5R early move, 1R → BE + trail
+# Regime filter: no longs in downtrend, no shorts in uptrend
+# Optimized 2026-03 (r_expectancy metric, 150 trials per asset):
+#   SOL: vwap=65, sd=2.25, stop=1.0×, min_vwap=3.25×, vol_max=8%  → +0.56R
+#   ETH: vwap=70, sd=2.75, stop=1.25×, min_vwap=3.5×,  vol_max=7.5% → +0.64R
+#   BTC: vwap=25, sd=1.75, stop=1.75×, min_vwap=3.25×, vol_max=3.5% → +0.80R
 V21_PARAMS = {
-    "vwap_period": 50,          # 4H bars in VWAP window (optimized)
-    "sd_entry": 2.25,           # SD level to trigger setup (SOL/BTC default; ETH=2.0)
-    "sd_max": 2.5,              # Max SD — ignore if too extended
+    "vwap_period": 65,          # 4H bars in VWAP window (SOL default)
+    "sd_entry": 2.25,           # SD level to trigger setup
     "atr_period": 14,           # ATR lookback
-    "atr_stop_mult": 2.75,      # Stop = ATR × mult (= 1R, optimized)
-    "atr_trailing_mult": 5.0,   # Runner trail = ATR × mult from HWM (V19-style, active from 1R)
+    "atr_stop_mult": 1.0,       # Stop = ATR × mult (= 1R)
+    "atr_trailing_mult": 5.0,   # Trail = ATR × mult from HWM (V19 style, active from 1R)
+    "min_vwap_mult": 3.25,      # VWAP distance filter: skip if VWAP < this × ATR away
+    "early_be_trig": 0.75,      # Move stop early at 0.75R
+    "early_be_dest": 0.5,       # Early stop destination: -0.5R (stored as positive fraction)
     "atr_vol_min_pct": 0.5,     # Min ATR% — filters flat/dead markets
-    "atr_vol_max_pct": 11.0,    # Max ATR% — filters explosive markets (optimized)
+    "atr_vol_max_pct": 8.0,     # Max ATR% — filters explosive markets
+    "regime_filter": True,      # Block counter-trend mean reversion entries
     "risk_per_trade_pct": 3.0,  # Risk 3% per trade
+}
+
+V21_ETH_PARAMS = {
+    "vwap_period": 70,
+    "sd_entry": 2.75,
+    "atr_period": 14,
+    "atr_stop_mult": 1.25,
+    "atr_trailing_mult": 5.0,
+    "min_vwap_mult": 3.5,
+    "early_be_trig": 0.75,
+    "early_be_dest": 0.5,
+    "atr_vol_min_pct": 0.5,
+    "atr_vol_max_pct": 7.5,
+    "regime_filter": True,
+    "risk_per_trade_pct": 3.0,
+}
+
+V21_BTC_PARAMS = {
+    "vwap_period": 25,
+    "sd_entry": 1.75,
+    "atr_period": 14,
+    "atr_stop_mult": 1.75,
+    "atr_trailing_mult": 5.0,
+    "min_vwap_mult": 3.25,
+    "early_be_trig": 0.75,
+    "early_be_dest": 0.5,
+    "atr_vol_min_pct": 0.5,
+    "atr_vol_max_pct": 3.5,
+    "regime_filter": True,
+    "risk_per_trade_pct": 3.0,
 }
 
 # V20 - Short-Only Double Top & Head and Shoulders

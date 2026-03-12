@@ -1153,21 +1153,25 @@ def create_v18_objective(metric: str = "final_value", start_date: str = None, en
 def create_v21_objective(metric: str = "final_value", start_date: str = None, end_date: str = None):
     """
     Create objective function for v21 (VWAP Mean Reversion).
-    R-based risk management: 3% risk at stop, 30/30/30/10 partials.
-    4 key optimizable params: vwap_period, sd_entry, atr_stop_mult, atr_vol_max_pct.
+    Exit: 90% at VWAP (wick), 10% runner on ATR trail.
+    Stop management: 0.75R early move, 1R → BE + V19-style trail.
+    5 key optimizable params: vwap_period, sd_entry, atr_stop_mult, min_vwap_mult, atr_vol_max_pct.
     """
     def objective(trial: optuna.Trial) -> float:
         params = {
-            # 4 tunable params
-            "vwap_period": trial.suggest_int("vwap_period", 15, 60, step=5),
-            "sd_entry": trial.suggest_float("sd_entry", 1.0, 2.5, step=0.25),
-            "atr_stop_mult": trial.suggest_float("atr_stop_mult", 1.0, 3.0, step=0.25),
-            "atr_vol_max_pct": trial.suggest_float("atr_vol_max_pct", 4.0, 12.0, step=0.5),
+            # 5 tunable params
+            "vwap_period":    trial.suggest_int("vwap_period", 20, 70, step=5),
+            "sd_entry":       trial.suggest_float("sd_entry", 1.5, 3.0, step=0.25),
+            "atr_stop_mult":  trial.suggest_float("atr_stop_mult", 1.0, 2.5, step=0.25),
+            "min_vwap_mult":  trial.suggest_float("min_vwap_mult", 1.0, 3.5, step=0.25),
+            "atr_vol_max_pct": trial.suggest_float("atr_vol_max_pct", 3.0, 12.0, step=0.5),
             # Fixed params
-            "sd_max": 2.5,
-            "atr_period": 14,
-            "atr_trailing_mult": 3.0,
-            "atr_vol_min_pct": 0.5,
+            "atr_period":       14,
+            "atr_trailing_mult": 5.0,
+            "early_be_trig":    0.75,
+            "early_be_dest":    0.5,
+            "atr_vol_min_pct":  0.5,
+            "regime_filter":    True,
             "risk_per_trade_pct": 3.0,
         }
 
