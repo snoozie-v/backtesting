@@ -1212,6 +1212,68 @@ def create_v21_objective(metric: str = "final_value", start_date: str = None, en
     return objective
 
 
+def _v22_params(trial: optuna.Trial) -> dict:
+    """Build v22 param dict: 7 tunable + 2 hardcoded."""
+    return {
+        "level_lookback":      trial.suggest_int("level_lookback",      20, 120, step=10),
+        "level_proximity_atr": trial.suggest_float("level_proximity_atr", 0.5, 3.0, step=0.25),
+        "daily_ema_period":    trial.suggest_int("daily_ema_period",    10, 50,  step=5),
+        "squeeze_lookback":    trial.suggest_int("squeeze_lookback",    20, 100, step=10),
+        "squeeze_pctile":      trial.suggest_float("squeeze_pctile",    15.0, 45.0, step=5.0),
+        "atr_stop_mult":       trial.suggest_float("atr_stop_mult",     1.0, 4.0,  step=0.25),
+        "atr_trail_mult":      trial.suggest_float("atr_trail_mult",    2.0, 6.0,  step=0.25),
+        # Hardcoded
+        "atr_period": 14,
+        "risk_pct": 3.0,
+    }
+
+
+def create_v22_objective(metric: str = "r_expectancy", start_date: str = None, end_date: str = None):
+    """
+    Create objective function for v22 (4H Structural Level + ATR Squeeze Breakout).
+    Three-filter entry: daily trend bias + structural level proximity + squeeze breakout.
+    R-based risk management: 3% risk at stop, 30/30/30/10 partials at 1R/2R/3R/runner.
+    """
+    def objective(trial: optuna.Trial) -> float:
+        params = _v22_params(trial)
+
+        try:
+            result = run_backtest(
+                strategy_name="v22",
+                params_override=params,
+                save=False,
+                verbose=False,
+                start_date=start_date,
+                end_date=end_date,
+            )
+
+            trial.set_user_attr("total_return_pct", result.total_return_pct)
+            trial.set_user_attr("total_trades", result.total_trades)
+            trial.set_user_attr("win_rate_pct", result.win_rate_pct or 0)
+            trial.set_user_attr("max_drawdown_pct", result.max_drawdown_pct or 0)
+            trial.set_user_attr("sharpe_ratio", result.sharpe_ratio or 0)
+            trial.set_user_attr("avg_r_multiple", result.avg_r_multiple or 0)
+
+            if metric == "final_value":
+                return result.final_value
+            elif metric == "sharpe":
+                return result.sharpe_ratio or -999
+            elif metric == "return":
+                return result.total_return_pct
+            elif metric == "r_expectancy":
+                if result.total_trades < 10:
+                    return -999.0
+                return result.avg_r_multiple or -999.0
+            else:
+                return result.final_value
+
+        except Exception as e:
+            print(f"Trial failed: {e}")
+            return 0.0
+
+    return objective
+
+
 def optimize(
     strategy: str = "v8_fast",
     n_trials: int = 50,
@@ -1293,6 +1355,8 @@ def optimize(
         objective = create_v18_objective(metric, start_date=start_date, end_date=end_date)
     elif strategy == "v21":
         objective = create_v21_objective(metric, start_date=start_date, end_date=end_date)
+    elif strategy == "v22":
+        objective = create_v22_objective(metric, start_date=start_date, end_date=end_date)
     elif strategy == "v19" and walk_forward_opt:
         objective = create_v19_walkforward_objective(
             metric, start_date=start_date, end_date=end_date)
@@ -1535,7 +1599,7 @@ Examples:
     parser.add_argument(
         "--strategy", "-s",
         default="v8_fast",
-        choices=["v8", "v8_fast", "v9", "v11", "v13", "v14", "v15", "v16", "v17", "v18", "v19", "v20", "v21"],
+        choices=["v8", "v8_fast", "v9", "v11", "v13", "v14", "v15", "v16", "v17", "v18", "v19", "v20", "v21", "v22"],
         help="Strategy to optimize (default: v8_fast)"
     )
 

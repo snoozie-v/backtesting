@@ -421,6 +421,31 @@ V19_PARAMS = {
     "early_be_dest": -0.5,      # Stop destination: halfway to stop loss
 }
 
+# V19 optimized per-asset params (final_value metric, 50 trials, 2026-03-13)
+# BTC: Trial #17 — +89.96%, 68 trades, 57.4% WR, 18.34% DD
+V19_BTC_PARAMS = {
+    "lookback": 42,
+    "squeeze_pctile": 30,
+    "atr_mult_long": 6.0,
+    "atr_mult_short": 8.25,
+    "atr_period": 14,
+    "risk_per_trade_pct": 3.0,
+    "early_be_trig": 0.75,
+    "early_be_dest": -0.5,
+}
+
+# ETH: Trial #0 — +136.17%, 50 trades, 70.0% WR, 11.12% DD
+V19_ETH_PARAMS = {
+    "lookback": 60,
+    "squeeze_pctile": 40,
+    "atr_mult_long": 8.0,
+    "atr_mult_short": 6.75,
+    "atr_period": 14,
+    "risk_per_trade_pct": 3.0,
+    "early_be_trig": 0.75,
+    "early_be_dest": -0.5,
+}
+
 # V21 - VWAP Mean Reversion (4H Rolling Window)
 # Enters counter-trend at SD bands, confirmed reversal bar
 # Exits: 90% at VWAP (wick), 10% runner on ATR trail
@@ -473,6 +498,19 @@ V21_BTC_PARAMS = {
     "atr_vol_max_pct": 3.5,
     "regime_filter": True,
     "risk_per_trade_pct": 3.0,
+}
+
+# V22 - 4H Structural Level + ATR Squeeze Breakout
+V22_PARAMS = {
+    "level_lookback":       50,    # 4H bars for swing high/low
+    "level_proximity_atr":  1.5,   # Price within N*ATR of structural level
+    "daily_ema_period":     21,    # Daily EMA for trend bias
+    "squeeze_lookback":     50,    # ATR percentile rank lookback (4H bars)
+    "squeeze_pctile":       30,    # Squeeze threshold percentile
+    "atr_stop_mult":        2.0,   # 1R = 4H ATR × this
+    "atr_trail_mult":       3.0,   # Runner trail multiplier (frozen ATR)
+    "atr_period":           14,    # ATR calculation period
+    "risk_pct":             3.0,   # % account to risk at stop
 }
 
 # V20 - Short-Only Double Top & Head and Shoulders
@@ -645,9 +683,12 @@ V13_PARAMS = {
 
 # Map strategy names to their parameter sets
 STRATEGY_PARAMS: Dict[str, Dict[str, Any]] = {
+    "v22": V22_PARAMS,
     "v21": V21_PARAMS,
     "v20": V20_PARAMS,
     "v19": V19_PARAMS,
+    "v19_btc": V19_BTC_PARAMS,
+    "v19_eth": V19_ETH_PARAMS,
     "v18": V18_PARAMS,
     "v17": V17_PARAMS,
     "v16": V16_PARAMS,
@@ -701,11 +742,15 @@ def register_strategies():
     from strategies.sol_strategy_v19 import SolStrategyV19
     from strategies.sol_strategy_v20 import SolStrategyV20
     from strategies.sol_strategy_v21 import SolStrategyV21
+    from strategies.sol_strategy_v22 import SolStrategyV22
 
     STRATEGY_CLASSES.update({
+        "v22": SolStrategyV22,
         "v21": SolStrategyV21,
         "v20": SolStrategyV20,
         "v19": SolStrategyV19,
+        "v19_btc": SolStrategyV19,
+        "v19_eth": SolStrategyV19,
         "v18": SolStrategyV18,
         "v17": SolStrategyV17,
         "v16": SolStrategyV16,

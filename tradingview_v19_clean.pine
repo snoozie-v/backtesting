@@ -1,0 +1,452 @@
+//@version=6
+indicator("V19 - Volatility Squeeze Breakout (Clean)", overlay=true, max_lines_count=500, max_labels_count=500)
+
+tf_secs  = timeframe.in_seconds()
+valid_tf = tf_secs == 15 * 60   // 15M only
+
+// ============================================================================
+// STRATEGY NOTES
+// ============================================================================
+// V19 Volatility Squeeze Breakout — Long + Short with direction toggle.
+// Walk-forward validated 2026-02-27 (SOL/USDT 15M):
+//   IS:  +10.2%, 90 trades, 52% win, 29.4% maxDD  (2021-01–2023-05)
+//   OOS: +30.5%, 48 trades, 50% win, 30.4% maxDD  (2023-05–2026-01)
+//
+// Validated params: lookback=102, sq_pctile=35, atr_mult=5.0
+// ETH/BTC: unvalidated — SOL defaults applied until walk-forward run
+//
+// Entry: close crosses squeeze range on squeeze end
+// Exits: 30% at 1R, 30% at 2R, 30% at 3R, ATR trail on 10% runner
+// Regime: 9-cell matrix (trend × vol), normal_vol uses 0.75× ATR mult
+// TF gate: signals fire only on the 15M chart
+
+// ============================================================================
+// INPUTS
+// ============================================================================
+
+// --- Strategy ---
+lookback_inp   = input.int  (0,   "Lookback (0=auto)",  group="Strategy", minval=0, step=6,   tooltip="0 = validated SOL default (102)")
+sq_pctile_inp  = input.int  (0,   "Squeeze % (0=auto)", group="Strategy", minval=0, maxval=50, step=5, tooltip="0 = validated SOL default (35)")
+atr_mult_inp   = input.float(0.0, "ATR Mult (0=auto)",  group="Strategy", step=0.25, minval=0.0, tooltip="0 = validated SOL default (5.0)")
+atr_period     = input.int  (14,  "ATR Period",          group="Strategy", minval=1)
+
+// Validated: SOL lookback=102, pctile=35, atr_mult=5.0 (WF 2026-02-27)
+// ETH/BTC: unvalidated — using SOL defaults until walk-forward run
+lookback  = lookback_inp  > 0   ? lookback_inp  : 102
+sq_pctile = sq_pctile_inp > 0   ? sq_pctile_inp : 35
+atr_mult  = atr_mult_inp  > 0.0 ? atr_mult_inp  : 5.0
+
+// --- Stop Mgmt ---
+use_early_be  = input.bool (true,  "Enable Early Stop Move",                                         group="Stop Mgmt")
+early_be_trig = input.float(0.75,  "Trigger (fraction of 1R)", minval=0.1, maxval=0.99, step=0.05,  group="Stop Mgmt", tooltip="Price must reach this fraction of 1R before stop moves.")
+early_be_dest = input.float(-0.5,  "Stop destination (R)",     minval=-0.99, maxval=0.0, step=0.05, group="Stop Mgmt", tooltip="0 = breakeven. -0.5 = halfway between entry and initial stop.")
+
+// --- Regime Filter ---
+use_regime_filter      = input.bool(true,  "Enable Regime Filter",          group="Regime Filter")
+allow_uptrend_high     = input.bool(true,  "Allow: Uptrend + High Vol",     group="Regime Filter")
+allow_uptrend_normal   = input.bool(true,  "Allow: Uptrend + Normal Vol",   group="Regime Filter")
+allow_uptrend_low      = input.bool(false, "Allow: Uptrend + Low Vol",      group="Regime Filter")
+allow_downtrend_high   = input.bool(true,  "Allow: Downtrend + High Vol",   group="Regime Filter")
+allow_downtrend_normal = input.bool(true,  "Allow: Downtrend + Normal Vol", group="Regime Filter")
+allow_downtrend_low    = input.bool(false, "Allow: Downtrend + Low Vol",    group="Regime Filter")
+allow_ranging_high     = input.bool(true,  "Allow: Ranging + High Vol",     group="Regime Filter")
+allow_ranging_normal   = input.bool(true,  "Allow: Ranging + Normal Vol",   group="Regime Filter")
+allow_ranging_low      = input.bool(false, "Allow: Ranging + Low Vol",      group="Regime Filter")
+
+// --- Direction ---
+enable_longs  = input.bool(true,  "Enable Long Entries",  group="Direction")
+enable_shorts = input.bool(true,  "Enable Short Entries", group="Direction")
+
+// --- Account ---
+account_equity = input.float(10000.0, "Account Equity ($)", group="Account", minval=100, tooltip="Used for position size calculation in entry labels only.")
+risk_pct       = input.float(3.0,     "Risk Per Trade (%)", group="Account", minval=0.1, maxval=100, step=0.5)
+
+// --- Display ---
+show_entry_arrows = input.bool(true,  "Show Entry Arrows",       group="Display")
+show_exit_markers = input.bool(true,  "Show Exit Markers",       group="Display")
+show_labels       = input.bool(true,  "Show Entry Labels",       group="Display")
+
+// ============================================================================
+// ATR & PERCENTILE RANK
+// ============================================================================
+
+atr_val         = ta.atr(atr_period)
+atr_pctile_rank = ta.percentrank(atr_val, lookback)
+
+// ============================================================================
+// SQUEEZE DETECTION
+// ============================================================================
+
+is_squeezing = atr_pctile_rank < sq_pctile
+
+var bool  in_squeeze         = false
+var float sq_high            = na
+var float sq_low             = na
+var bool  squeeze_just_ended = false
+var float saved_sq_high      = na
+var float saved_sq_low       = na
+var int   sq_bar_count       = 0
+
+squeeze_just_ended := false
+saved_sq_high      := na
+saved_sq_low       := na
+
+if is_squeezing
+    if not in_squeeze
+        in_squeeze    := true
+        sq_high       := high
+        sq_low        := low
+        sq_bar_count  := 1
+    else
+        if high > sq_high
+            sq_high := high
+        if low < sq_low
+            sq_low  := low
+        sq_bar_count += 1
+else if in_squeeze
+    squeeze_just_ended := true
+    saved_sq_high      := sq_high
+    saved_sq_low       := sq_low
+    in_squeeze    := false
+    sq_high       := na
+    sq_low        := na
+    // sq_bar_count intentionally kept — reset on next squeeze start
+
+// ============================================================================
+// ENTRY SIGNALS  (signals only fire on valid_tf: 15M–1H)
+// ============================================================================
+
+valid_range    = squeeze_just_ended and not na(saved_sq_high) and not na(saved_sq_low) and saved_sq_high > saved_sq_low
+long_breakout  = valid_range and close > saved_sq_high and valid_tf
+short_breakout = valid_range and close < saved_sq_low  and valid_tf
+
+// ============================================================================
+// MARKET REGIME CLASSIFICATION
+// ============================================================================
+
+daily_ema   = request.security(syminfo.tickerid, "1D", ta.ema(close, 21))
+daily_close = request.security(syminfo.tickerid, "1D", close)
+ema_slope   = daily_ema[5] > 0 ? (daily_ema - daily_ema[5]) / daily_ema[5] * 100 : 0.0
+
+regime_trend_live = ema_slope > 0 and daily_close > daily_ema ? "uptrend" : ema_slope < 0 and daily_close < daily_ema ? "downtrend" : "ranging"
+
+atr_4h          = request.security(syminfo.tickerid, "240", ta.atr(14))
+atr_4h_pct_rank = ta.percentrank(atr_4h, 90)
+
+regime_vol_live = atr_4h_pct_rank > 75 ? "high_vol" : atr_4h_pct_rank < 25 ? "low_vol" : "normal_vol"
+
+// Locked regime: snapshot from previous bar close
+// Prevents signals from appearing mid-bar then vanishing as HTF data updates.
+regime_trend = regime_trend_live[1]
+regime_vol   = regime_vol_live[1]
+regime_label = regime_trend + "_" + regime_vol
+
+regime_allowed = not use_regime_filter or (
+     (regime_trend == "uptrend"   and regime_vol == "high_vol"   and allow_uptrend_high)    or
+     (regime_trend == "uptrend"   and regime_vol == "normal_vol" and allow_uptrend_normal)   or
+     (regime_trend == "uptrend"   and regime_vol == "low_vol"    and allow_uptrend_low)      or
+     (regime_trend == "downtrend" and regime_vol == "high_vol"   and allow_downtrend_high)   or
+     (regime_trend == "downtrend" and regime_vol == "normal_vol" and allow_downtrend_normal) or
+     (regime_trend == "downtrend" and regime_vol == "low_vol"    and allow_downtrend_low)    or
+     (regime_trend == "ranging"   and regime_vol == "high_vol"   and allow_ranging_high)     or
+     (regime_trend == "ranging"   and regime_vol == "normal_vol" and allow_ranging_normal)   or
+     (regime_trend == "ranging"   and regime_vol == "low_vol"    and allow_ranging_low))
+
+// ============================================================================
+// TRADE TRACKING
+// ============================================================================
+
+var float active_entry      = na
+var int   active_direction  = 0
+var float active_atr        = na
+var float high_water_mark   = na
+var float low_water_mark    = na
+var float active_trail_stop = na
+var float active_vol_scale  = 1.0
+
+var float r1_target    = na
+var float r2_target    = na
+var float r3_target    = na
+var float stop_dist    = na
+var int   partials     = 0
+var float ratchet_stop = na
+var bool  be_locked    = false
+
+var int   total_trades   = 0
+var int   winning_trades = 0
+var int   losing_trades  = 0
+var float cum_r          = 0.0   // cumulative R across all trades this session
+
+// ============================================================================
+// TRAILING STOP UPDATE
+// ============================================================================
+
+if active_direction == 1
+    if close > high_water_mark or high > high_water_mark
+        high_water_mark := math.max(close, high)
+    if partials >= 1
+        atr_trail_l = high_water_mark - (active_atr * atr_mult * active_vol_scale)
+        active_trail_stop := math.max(ratchet_stop, atr_trail_l)
+    else
+        active_trail_stop := ratchet_stop
+
+if active_direction == -1
+    if close < low_water_mark or low < low_water_mark
+        low_water_mark := math.min(close, low)
+    if partials >= 1
+        atr_trail_s = low_water_mark + (active_atr * atr_mult * active_vol_scale)
+        active_trail_stop := math.min(ratchet_stop, atr_trail_s)
+    else
+        active_trail_stop := ratchet_stop
+
+// ============================================================================
+// EXIT LOGIC
+// ============================================================================
+
+var bool exit_long_signal  = false
+var bool exit_short_signal = false
+
+exit_long_signal  := false
+exit_short_signal := false
+
+// --- Long exits ---
+if active_direction == 1
+    // Early stop move — fires once before any partial when price reaches trigger fraction of 1R
+    if use_early_be and not be_locked and partials == 0 and not na(stop_dist)
+        if high >= active_entry + stop_dist * early_be_trig
+            ratchet_stop      := active_entry + stop_dist * early_be_dest
+            active_trail_stop := ratchet_stop
+            be_locked         := true
+
+    // Partial exits — ratchet stop at each R level
+    if partials < 1 and not na(r1_target) and high >= r1_target
+        partials          := 1
+        ratchet_stop      := active_entry
+        active_trail_stop := ratchet_stop
+        cum_r             += 0.30 * 1.0   // 30% of position at +1R
+    else if partials == 1 and not na(r2_target) and high >= r2_target
+        partials          := 2
+        ratchet_stop      := active_entry + stop_dist
+        active_trail_stop := ratchet_stop
+        cum_r             += 0.30 * 2.0   // 30% of position at +2R
+    else if partials == 2 and not na(r3_target) and high >= r3_target
+        partials          := 3
+        ratchet_stop      := active_entry + (stop_dist * 2)
+        active_trail_stop := ratchet_stop
+        cum_r             += 0.30 * 3.0   // 30% of position at +3R
+
+    // Stop / trail exit
+    if low <= active_trail_stop
+        remaining_pct     = partials == 0 ? 1.0 : partials == 1 ? 0.7 : partials == 2 ? 0.4 : 0.1
+        exit_r_raw        = not na(stop_dist) and stop_dist > 0 ? (active_trail_stop - active_entry) / stop_dist : 0.0
+        cum_r             += remaining_pct * exit_r_raw
+        total_trades      += 1
+        if active_trail_stop > active_entry
+            winning_trades += 1
+        else
+            losing_trades  += 1
+        exit_long_signal  := true
+        active_direction  := 0
+        active_entry      := na
+        active_atr        := na
+        active_vol_scale  := 1.0
+        high_water_mark   := na
+        low_water_mark    := na
+        active_trail_stop := na
+        r1_target         := na
+        r2_target         := na
+        r3_target         := na
+        stop_dist         := na
+        partials          := 0
+        ratchet_stop      := na
+        be_locked         := false
+
+// --- Short exits ---
+if active_direction == -1
+    // Early stop move — fires once before any partial when price reaches trigger fraction of 1R
+    if use_early_be and not be_locked and partials == 0 and not na(stop_dist)
+        if low <= active_entry - stop_dist * early_be_trig
+            ratchet_stop      := active_entry - stop_dist * early_be_dest
+            active_trail_stop := ratchet_stop
+            be_locked         := true
+
+    // Partial exits — ratchet stop at each R level
+    if partials < 1 and not na(r1_target) and low <= r1_target
+        partials          := 1
+        ratchet_stop      := active_entry
+        active_trail_stop := ratchet_stop
+        cum_r             += 0.30 * 1.0
+    else if partials == 1 and not na(r2_target) and low <= r2_target
+        partials          := 2
+        ratchet_stop      := active_entry - stop_dist
+        active_trail_stop := ratchet_stop
+        cum_r             += 0.30 * 2.0
+    else if partials == 2 and not na(r3_target) and low <= r3_target
+        partials          := 3
+        ratchet_stop      := active_entry - (stop_dist * 2)
+        active_trail_stop := ratchet_stop
+        cum_r             += 0.30 * 3.0
+
+    // Stop / trail exit
+    if high >= active_trail_stop
+        remaining_pct      = partials == 0 ? 1.0 : partials == 1 ? 0.7 : partials == 2 ? 0.4 : 0.1
+        exit_r_raw         = not na(stop_dist) and stop_dist > 0 ? (active_entry - active_trail_stop) / stop_dist : 0.0
+        cum_r              += remaining_pct * exit_r_raw
+        total_trades       += 1
+        if active_trail_stop < active_entry
+            winning_trades += 1
+        else
+            losing_trades  += 1
+        exit_short_signal  := true
+        active_direction   := 0
+        active_entry       := na
+        active_atr         := na
+        active_vol_scale   := 1.0
+        high_water_mark    := na
+        low_water_mark     := na
+        active_trail_stop  := na
+        r1_target          := na
+        r2_target          := na
+        r3_target          := na
+        stop_dist          := na
+        partials           := 0
+        ratchet_stop       := na
+        be_locked          := false
+
+// ============================================================================
+// NEW ENTRIES
+// ============================================================================
+
+var bool new_long_entry  = false
+var bool new_short_entry = false
+
+new_long_entry  := false
+new_short_entry := false
+
+// --- Long entry ---
+if long_breakout and enable_longs and active_direction == 0 and atr_val > 0
+    if regime_allowed
+        vol_scale         = regime_vol == "normal_vol" ? 0.75 : 1.0
+        eff_mult          = atr_mult * vol_scale
+        active_entry      := close
+        active_direction  := 1
+        active_atr        := atr_val
+        active_vol_scale  := vol_scale
+        high_water_mark   := close
+        low_water_mark    := na
+        stop_dist         := atr_val * eff_mult
+        ratchet_stop      := close - stop_dist
+        active_trail_stop := ratchet_stop
+        r1_target         := close + stop_dist
+        r2_target         := close + (stop_dist * 2)
+        r3_target         := close + (stop_dist * 3)
+        partials          := 0
+        be_locked         := false
+        new_long_entry    := true
+
+        if show_labels
+            risk_amt   = account_equity * risk_pct / 100
+            qty        = stop_dist > 0 ? risk_amt / stop_dist : 0.0
+            atr_pct    = close > 0 ? atr_val / close * 100 : 0.0
+            vol_tag    = regime_vol == "normal_vol" ? " (0.75x ATR)" : ""
+            be_line    = use_early_be ? "BE→:  " + str.tostring(close + stop_dist * early_be_trig, format.mintick) + " (" + str.tostring(early_be_trig * 100, "#") + "% of 1R)\n" : ""
+            label_text = "LONG [V19]\n" +
+                 regime_label + vol_tag + "\n" +
+                 "Entry: " + str.tostring(close, format.mintick) + "\n" +
+                 "Stop:  " + str.tostring(ratchet_stop, format.mintick) + " (-1R)\n" +
+                 be_line +
+                 "1R:    " + str.tostring(r1_target, format.mintick) + "\n" +
+                 "2R:    " + str.tostring(r2_target, format.mintick) + "\n" +
+                 "3R:    " + str.tostring(r3_target, format.mintick) + "\n" +
+                 "Qty:   " + str.tostring(qty, "#.##") + "\n" +
+                 "ATR%:  " + str.tostring(atr_pct, "#.##") + "%"
+            label.new(bar_index, low, label_text, color=color.new(color.green, 15), textcolor=color.white, style=label.style_label_up, size=size.normal)
+
+// --- Short entry ---
+if short_breakout and enable_shorts and active_direction == 0 and atr_val > 0
+    if regime_allowed
+        vol_scale         = regime_vol == "normal_vol" ? 0.75 : 1.0
+        eff_mult          = atr_mult * vol_scale
+        active_entry      := close
+        active_direction  := -1
+        active_atr        := atr_val
+        active_vol_scale  := vol_scale
+        low_water_mark    := close
+        high_water_mark   := na
+        stop_dist         := atr_val * eff_mult
+        ratchet_stop      := close + stop_dist
+        active_trail_stop := ratchet_stop
+        r1_target         := close - stop_dist
+        r2_target         := close - (stop_dist * 2)
+        r3_target         := close - (stop_dist * 3)
+        partials          := 0
+        be_locked         := false
+        new_short_entry   := true
+
+        if show_labels
+            risk_amt   = account_equity * risk_pct / 100
+            qty        = stop_dist > 0 ? risk_amt / stop_dist : 0.0
+            atr_pct    = close > 0 ? atr_val / close * 100 : 0.0
+            vol_tag    = regime_vol == "normal_vol" ? " (0.75x ATR)" : ""
+            be_line    = use_early_be ? "BE→:  " + str.tostring(close - stop_dist * early_be_trig, format.mintick) + " (" + str.tostring(early_be_trig * 100, "#") + "% of 1R)\n" : ""
+            label_text = "SHORT [V19]\n" +
+                 regime_label + vol_tag + "\n" +
+                 "Entry: " + str.tostring(close, format.mintick) + "\n" +
+                 "Stop:  " + str.tostring(ratchet_stop, format.mintick) + " (-1R)\n" +
+                 be_line +
+                 "1R:    " + str.tostring(r1_target, format.mintick) + "\n" +
+                 "2R:    " + str.tostring(r2_target, format.mintick) + "\n" +
+                 "3R:    " + str.tostring(r3_target, format.mintick) + "\n" +
+                 "Qty:   " + str.tostring(qty, "#.##") + "\n" +
+                 "ATR%:  " + str.tostring(atr_pct, "#.##") + "%"
+            label.new(bar_index, high, label_text, color=color.new(color.red, 15), textcolor=color.white, style=label.style_label_down, size=size.normal)
+
+// ============================================================================
+// PLOTS
+// ============================================================================
+
+// Entry / exit markers
+plotshape(show_entry_arrows and new_long_entry,    title="Long Entry",  location=location.belowbar, color=color.lime,   style=shape.triangleup,   size=size.normal)
+plotshape(show_exit_markers and exit_long_signal,  title="Long Exit",   location=location.abovebar, color=color.orange, style=shape.xcross,       size=size.normal)
+plotshape(show_entry_arrows and new_short_entry,   title="Short Entry", location=location.abovebar, color=color.red,    style=shape.triangledown, size=size.normal)
+plotshape(show_exit_markers and exit_short_signal, title="Short Exit",  location=location.belowbar, color=color.orange, style=shape.xcross,       size=size.normal)
+
+// ============================================================================
+// DASHBOARD  (5 rows, bottom-left)
+// ============================================================================
+
+var table dash = table.new(position.bottom_left, 2, 5, bgcolor=color.new(color.black, 80))
+if barstate.islast
+    // Row 0: Position
+    pos_text  = active_direction ==  1 ? "LONG" : active_direction == -1 ? "SHORT" : "FLAT"
+    pos_color = active_direction ==  1 ? color.green : active_direction == -1 ? color.red : color.gray
+    table.cell(dash, 0, 0, "Pos",    text_color=color.white)
+    table.cell(dash, 1, 0, pos_text, text_color=pos_color)
+
+    // Row 1: Current R + partials taken
+    cur_r   = active_direction ==  1 and not na(stop_dist) and stop_dist > 0 ? (close - active_entry) / stop_dist :
+              active_direction == -1 and not na(stop_dist) and stop_dist > 0 ? (active_entry - close) / stop_dist : na
+    r_text  = not na(cur_r) ? str.tostring(cur_r, "+0.00") + "R [" + str.tostring(partials) + "/3]" : "--"
+    r_color = not na(cur_r) ? (cur_r >= 0.0 ? color.green : color.red) : color.gray
+    table.cell(dash, 0, 1, "R",     text_color=color.white)
+    table.cell(dash, 1, 1, r_text,  text_color=r_color)
+
+    // Row 2: Current stop price
+    stop_text  = active_direction != 0 ? str.tostring(active_trail_stop, format.mintick) + " [" + str.tostring(partials) + "/3 taken]" : "--"
+    stop_color = active_direction != 0 ? color.yellow : color.gray
+    table.cell(dash, 0, 2, "Stop",    text_color=color.white)
+    table.cell(dash, 1, 2, stop_text, text_color=stop_color)
+
+    // Row 3: ATR percentile rank (yellow = squeezing)
+    atr_pct_str = str.tostring(atr_pctile_rank, "#") + "% (sq<" + str.tostring(sq_pctile) + ")"
+    atr_color   = is_squeezing ? color.yellow : color.white
+    table.cell(dash, 0, 3, "ATR%",      text_color=color.white)
+    table.cell(dash, 1, 3, atr_pct_str, text_color=atr_color)
+
+    // Row 4: Regime (green uptrend, red downtrend, gray ranging; gray if blocked)
+    rgm_color = regime_trend == "uptrend" ? color.green : regime_trend == "downtrend" ? color.red : color.gray
+    rgm_text  = regime_allowed ? regime_label : "BLOCKED (" + regime_label + ")"
+    table.cell(dash, 0, 4, "Regime",   text_color=color.white)
+    table.cell(dash, 1, 4, rgm_text,   text_color=regime_allowed ? rgm_color : color.gray)
+
+

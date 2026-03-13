@@ -1,20 +1,20 @@
 {
   "params": {
-    "lookback": 36,
-    "squeeze_pctile": 10,
-    "atr_mult_long": 7.0,
-    "atr_mult_short": 9.5
+    "lookback": 42,
+    "squeeze_pctile": 30,
+    "atr_mult_long": 6.0,
+    "atr_mult_short": 8.25
   },
   "metrics": {
-    "optimizer_score": 0.42,
-    "final_value": 0.42,
-    "total_return_pct": -89.76032206758468,
-    "total_trades": 119,
+    "optimizer_score": 18996.029325612082,
+    "final_value": 18996.029325612082,
+    "total_return_pct": 89.96029325612082,
+    "total_trades": 68,
     "trades_per_day": null,
-    "win_rate_pct": 45.378151260504204,
-    "max_drawdown_pct": 93.430436680796,
+    "win_rate_pct": 57.35294117647059,
+    "max_drawdown_pct": 18.342397914548336,
     "sharpe_ratio": 0
   },
-  "trial_number": 40,
-  "timestamp": "2026-02-27T12:14:32.664797"
+  "trial_number": 17,
+  "timestamp": "2026-03-13T00:50:37.890919"
 }

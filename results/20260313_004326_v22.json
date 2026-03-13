@@ -1,0 +1,478 @@
+{
+  "run_id": "20260313_004326",
+  "timestamp": "2026-03-13T00:43:26.895001",
+  "strategy": "v22",
+  "data_source": "binance",
+  "params": {
+    "level_lookback": 50,
+    "level_proximity_atr": 1.5,
+    "daily_ema_period": 21,
+    "squeeze_lookback": 50,
+    "squeeze_pctile": 30,
+    "atr_stop_mult": 2.0,
+    "atr_trail_mult": 3.0,
+    "atr_period": 14,
+    "risk_pct": 3.0
+  },
+  "starting_value": 10000.0,
+  "final_value": 10732.479865744544,
+  "total_return_pct": 7.324798657445444,
+  "max_drawdown_pct": 15.466462864057453,
+  "sharpe_ratio": null,
+  "total_trades": 22,
+  "winning_trades": 12,
+  "losing_trades": 10,
+  "win_rate_pct": 54.54545454545454,
+  "avg_trade_pct": 0.3329453935202475,
+  "start_date": "2021-01-01",
+  "end_date": "2026-01-12",
+  "buy_hold_value": 918333.6634317026,
+  "buy_hold_return_pct": 9083.336634317026,
+  "alpha_pct": -9076.01183565958,
+  "avg_r_multiple": null,
+  "best_r": null,
+  "worst_r": null,
+  "notes": "",
+  "trades": [
+    {
+      "entry_dt": "2021-01-31 00:15",
+      "exit_dt": "2021-01-31 15:30",
+      "entry_price": 4.23,
+      "exit_price": 4.3173,
+      "size": 1044.811887,
+      "pnl": 91.21,
+      "pnl_net": 86.75,
+      "pnl_pct": 2.06,
+      "r_multiple": null,
+      "bars_held": 61,
+      "direction": "long",
+      "market_context": {
+        "trend": "uptrend",
+        "volatility": "high_vol",
+        "regime": "uptrend_high_vol",
+        "ema_slope": 8.983,
+        "atr_percentile": 100.0
+      }
+    },
+    {
+      "entry_dt": "2021-02-19 08:15",
+      "exit_dt": "2021-02-20 00:45",
+      "entry_price": 9.4305,
+      "exit_price": 11.3217,
+      "size": 391.733241,
+      "pnl": 740.84,
+      "pnl_net": 736.77,
+      "pnl_pct": 20.05,
+      "r_multiple": null,
+      "bars_held": 66,
+      "direction": "long",
+      "market_context": {
+        "trend": "uptrend",
+        "volatility": "high_vol",
+        "regime": "uptrend_high_vol",
+        "ema_slope": 12.419,
+        "atr_percentile": 100.0
+      }
+    },
+    {
+      "entry_dt": "2021-03-11 20:15",
+      "exit_dt": "2021-03-12 19:30",
+      "entry_price": 15.9136,
+      "exit_price": 14.8,
+      "size": 304.571857,
+      "pnl": -339.17,
+      "pnl_net": -343.85,
+      "pnl_pct": -7.0,
+      "r_multiple": null,
+      "bars_held": 93,
+      "direction": "long",
+      "market_context": {
+        "trend": "uptrend",
+        "volatility": "high_vol",
+        "regime": "uptrend_high_vol",
+        "ema_slope": 5.898,
+        "atr_percentile": 100.0
+      }
+    },
+    {
+      "entry_dt": "2021-03-22 04:15",
+      "exit_dt": "2021-03-22 21:00",
+      "entry_price": 15.1211,
+      "exit_price": 15.3588,
+      "size": 446.744031,
+      "pnl": 106.17,
+      "pnl_net": 99.36,
+      "pnl_pct": 1.57,
+      "r_multiple": null,
+      "bars_held": 67,
+      "direction": "long",
+      "market_context": {
+        "trend": "uptrend",
+        "volatility": "high_vol",
+        "regime": "uptrend_high_vol",
+        "ema_slope": 1.436,
+        "atr_percentile": 100.0
+      }
+    },
+    {
+      "entry_dt": "2021-07-25 04:15",
+      "exit_dt": "2021-07-26 01:30",
+      "entry_price": 27.9332,
+      "exit_price": 26.209,
+      "size": 178.685037,
+      "pnl": -308.09,
+      "pnl_net": -313.23,
+      "pnl_pct": -6.17,
+      "r_multiple": null,
+      "bars_held": 85,
+      "direction": "short",
+      "market_context": {
+        "trend": "downtrend",
+        "volatility": "low_vol",
+        "regime": "downtrend_low_vol",
+        "ema_slope": -3.986,
+        "atr_percentile": 10.0
+      }
+    },
+    {
+      "entry_dt": "2021-08-26 16:15",
+      "exit_dt": "2021-08-31 16:15",
+      "entry_price": 75.1105,
+      "exit_price": 92.2849,
+      "size": 41.754475,
+      "pnl": 717.11,
+      "pnl_net": 713.61,
+      "pnl_pct": 22.87,
+      "r_multiple": null,
+      "bars_held": 480,
+      "direction": "long",
+      "market_context": {
+        "trend": "uptrend",
+        "volatility": "high_vol",
+        "regime": "uptrend_high_vol",
+        "ema_slope": 19.063,
+        "atr_percentile": 100.0
+      }
+    },
+    {
+      "entry_dt": "2021-11-13 16:15",
+      "exit_dt": "2021-11-16 10:15",
+      "entry_price": 234.8274,
+      "exit_price": 214.5408,
+      "size": 24.278991,
+      "pnl": -492.54,
+      "pnl_net": -497.99,
+      "pnl_pct": -8.64,
+      "r_multiple": null,
+      "bars_held": 264,
+      "direction": "long",
+      "market_context": {
+        "trend": "uptrend",
+        "volatility": "high_vol",
+        "regime": "uptrend_high_vol",
+        "ema_slope": 3.563,
+        "atr_percentile": 100.0
+      }
+    },
+    {
+      "entry_dt": "2022-01-14 00:15",
+      "exit_dt": "2022-01-23 09:15",
+      "entry_price": 146.763,
+      "exit_price": 168.1752,
+      "size": 34.995585,
+      "pnl": 749.33,
+      "pnl_net": 744.57,
+      "pnl_pct": 14.59,
+      "r_multiple": null,
+      "bars_held": 900,
+      "direction": "short",
+      "market_context": {
+        "trend": "downtrend",
+        "volatility": "normal_vol",
+        "regime": "downtrend_normal_vol",
+        "ema_slope": -6.312,
+        "atr_percentile": 63.3
+      }
+    },
+    {
+      "entry_dt": "2022-02-06 16:15",
+      "exit_dt": "2022-02-07 15:00",
+      "entry_price": 112.9076,
+      "exit_price": 104.7622,
+      "size": 46.256344,
+      "pnl": -376.78,
+      "pnl_net": -382.19,
+      "pnl_pct": -7.21,
+      "r_multiple": null,
+      "bars_held": 91,
+      "direction": "short",
+      "market_context": {
+        "trend": "ranging",
+        "volatility": "normal_vol",
+        "regime": "ranging_normal_vol",
+        "ema_slope": -1.993,
+        "atr_percentile": 48.9
+      }
+    },
+    {
+      "entry_dt": "2022-06-02 00:15",
+      "exit_dt": "2022-06-06 01:30",
+      "entry_price": 39.8251,
+      "exit_price": 40.463,
+      "size": 101.146414,
+      "pnl": 64.52,
+      "pnl_net": 60.52,
+      "pnl_pct": 1.6,
+      "r_multiple": null,
+      "bars_held": 389,
+      "direction": "short",
+      "market_context": {
+        "trend": "downtrend",
+        "volatility": "low_vol",
+        "regime": "downtrend_low_vol",
+        "ema_slope": -9.495,
+        "atr_percentile": 5.6
+      }
+    },
+    {
+      "entry_dt": "2022-08-10 16:15",
+      "exit_dt": "2022-08-14 15:15",
+      "entry_price": 42.3431,
+      "exit_price": 46.0915,
+      "size": 169.485499,
+      "pnl": 635.3,
+      "pnl_net": 627.81,
+      "pnl_pct": 8.85,
+      "r_multiple": null,
+      "bars_held": 380,
+      "direction": "long",
+      "market_context": {
+        "trend": "uptrend",
+        "volatility": "normal_vol",
+        "regime": "uptrend_normal_vol",
+        "ema_slope": 2.719,
+        "atr_percentile": 48.9
+      }
+    },
+    {
+      "entry_dt": "2022-08-26 16:15",
+      "exit_dt": "2022-09-06 01:15",
+      "entry_price": 33.3788,
+      "exit_price": 34.0341,
+      "size": 181.6639,
+      "pnl": 119.05,
+      "pnl_net": 113.05,
+      "pnl_pct": 1.96,
+      "r_multiple": null,
+      "bars_held": 996,
+      "direction": "short",
+      "market_context": {
+        "trend": "downtrend",
+        "volatility": "low_vol",
+        "regime": "downtrend_low_vol",
+        "ema_slope": -4.62,
+        "atr_percentile": 22.2
+      }
+    },
+    {
+      "entry_dt": "2022-10-11 00:30",
+      "exit_dt": "2022-10-13 15:30",
+      "entry_price": 31.5,
+      "exit_price": 33.6115,
+      "size": 412.774531,
+      "pnl": 871.58,
+      "pnl_net": 859.02,
+      "pnl_pct": 6.7,
+      "r_multiple": null,
+      "bars_held": 252,
+      "direction": "short",
+      "market_context": {
+        "trend": "downtrend",
+        "volatility": "high_vol",
+        "regime": "downtrend_high_vol",
+        "ema_slope": -1.384,
+        "atr_percentile": 100.0
+      }
+    },
+    {
+      "entry_dt": "2022-11-21 20:15",
+      "exit_dt": "2022-11-22 23:15",
+      "entry_price": 11.4958,
+      "exit_price": 10.6122,
+      "size": 413.101701,
+      "pnl": -365.02,
+      "pnl_net": -369.95,
+      "pnl_pct": -7.69,
+      "r_multiple": null,
+      "bars_held": 108,
+      "direction": "short",
+      "market_context": {
+        "trend": "downtrend",
+        "volatility": "high_vol",
+        "regime": "downtrend_high_vol",
+        "ema_slope": -16.395,
+        "atr_percentile": 100.0
+      }
+    },
+    {
+      "entry_dt": "2023-02-01 20:15",
+      "exit_dt": "2023-02-02 23:45",
+      "entry_price": 24.4307,
+      "exit_price": 24.7041,
+      "size": 243.785624,
+      "pnl": 66.65,
+      "pnl_net": 60.66,
+      "pnl_pct": 1.12,
+      "r_multiple": null,
+      "bars_held": 110,
+      "direction": "long",
+      "market_context": {
+        "trend": "uptrend",
+        "volatility": "high_vol",
+        "regime": "uptrend_high_vol",
+        "ema_slope": 6.254,
+        "atr_percentile": 100.0
+      }
+    },
+    {
+      "entry_dt": "2023-04-05 16:15",
+      "exit_dt": "2023-04-10 22:30",
+      "entry_price": 20.72,
+      "exit_price": 20.804,
+      "size": 496.894689,
+      "pnl": 41.74,
+      "pnl_net": 31.46,
+      "pnl_pct": 0.41,
+      "r_multiple": null,
+      "bars_held": 505,
+      "direction": "short",
+      "market_context": {
+        "trend": "downtrend",
+        "volatility": "high_vol",
+        "regime": "downtrend_high_vol",
+        "ema_slope": -0.639,
+        "atr_percentile": 98.9
+      }
+    },
+    {
+      "entry_dt": "2025-03-19 16:15",
+      "exit_dt": "2025-03-20 17:00",
+      "entry_price": 131.68,
+      "exit_price": 127.3,
+      "size": 81.639003,
+      "pnl": -357.58,
+      "pnl_net": -368.15,
+      "pnl_pct": -3.33,
+      "r_multiple": null,
+      "bars_held": 99,
+      "direction": "long",
+      "market_context": {
+        "trend": "ranging",
+        "volatility": "high_vol",
+        "regime": "ranging_high_vol",
+        "ema_slope": 1.676,
+        "atr_percentile": 81.1
+      }
+    },
+    {
+      "entry_dt": "2025-03-24 12:15",
+      "exit_dt": "2025-03-25 03:30",
+      "entry_price": 142.94,
+      "exit_price": 139.11,
+      "size": 83.175261,
+      "pnl": -318.56,
+      "pnl_net": -330.29,
+      "pnl_pct": -2.68,
+      "r_multiple": null,
+      "bars_held": 61,
+      "direction": "long",
+      "market_context": {
+        "trend": "uptrend",
+        "volatility": "normal_vol",
+        "regime": "uptrend_normal_vol",
+        "ema_slope": 1.429,
+        "atr_percentile": 45.6
+      }
+    },
+    {
+      "entry_dt": "2025-08-20 20:15",
+      "exit_dt": "2025-08-21 17:00",
+      "entry_price": 186.5,
+      "exit_price": 180.7,
+      "size": 54.120429,
+      "pnl": -313.9,
+      "pnl_net": -323.84,
+      "pnl_pct": -3.11,
+      "r_multiple": null,
+      "bars_held": 83,
+      "direction": "long",
+      "market_context": {
+        "trend": "ranging",
+        "volatility": "normal_vol",
+        "regime": "ranging_normal_vol",
+        "ema_slope": 1.116,
+        "atr_percentile": 74.4
+      }
+    },
+    {
+      "entry_dt": "2025-08-22 16:15",
+      "exit_dt": "2025-08-25 08:00",
+      "entry_price": 195.57,
+      "exit_price": 203.943,
+      "size": 44.501505,
+      "pnl": 372.61,
+      "pnl_net": 363.72,
+      "pnl_pct": 4.28,
+      "r_multiple": null,
+      "bars_held": 255,
+      "direction": "long",
+      "market_context": {
+        "trend": "uptrend",
+        "volatility": "high_vol",
+        "regime": "uptrend_high_vol",
+        "ema_slope": 1.898,
+        "atr_percentile": 100.0
+      }
+    },
+    {
+      "entry_dt": "2025-10-08 20:15",
+      "exit_dt": "2025-10-09 08:45",
+      "entry_price": 229.08,
+      "exit_price": 220.59,
+      "size": 41.598903,
+      "pnl": -353.17,
+      "pnl_net": -362.53,
+      "pnl_pct": -3.71,
+      "r_multiple": null,
+      "bars_held": 50,
+      "direction": "long",
+      "market_context": {
+        "trend": "ranging",
+        "volatility": "high_vol",
+        "regime": "ranging_high_vol",
+        "ema_slope": 1.615,
+        "atr_percentile": 81.1
+      }
+    },
+    {
+      "entry_dt": "2025-12-01 16:15",
+      "exit_dt": "2025-12-02 13:30",
+      "entry_price": 124.19,
+      "exit_price": 117.81,
+      "size": 72.658166,
+      "pnl": -463.56,
+      "pnl_net": -472.81,
+      "pnl_pct": -5.14,
+      "r_multiple": null,
+      "bars_held": 85,
+      "direction": "short",
+      "market_context": {
+        "trend": "downtrend",
+        "volatility": "normal_vol",
+        "regime": "downtrend_normal_vol",
+        "ema_slope": -2.406,
+        "atr_percentile": 28.9
+      }
+    }
+  ]
+}
